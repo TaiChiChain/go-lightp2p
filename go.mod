@@ -2,6 +2,8 @@ module github.com/meshplus/go-lightp2p
 
 go 1.13
 
+replace github.com/meshplus/go-libp2p-cert => github.com/TaiChiChain/go-libp2p-cert v0.0.0-20230625062152-44e7041e4770
+
 require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/ipfs/go-cid v0.0.5
