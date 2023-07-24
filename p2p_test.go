@@ -11,7 +11,7 @@ import (
 
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/peer"
-	libp2pcert "github.com/meshplus/go-libp2p-cert"
+	libp2pcert "github.com/meshplus/go-lightp2p/cert"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,10 +20,10 @@ import (
 const (
 	protocolID1      string = "/test/1.0.0" // magic protocol
 	protocolID2      string = "/test/2.0.0" // magic protocol
-	repo_path               = ""
-	node_cert_path   string = "certs/node.cert"
-	agency_cert_path string = "certs/agency.cert"
-	ca_cert_path     string = "certs/ca.cert"
+	repo_path               = "cert"
+	node_cert_path   string = "testdata/node.cert"
+	agency_cert_path string = "testdata/agency.cert"
+	ca_cert_path     string = "testdata/ca.cert"
 )
 
 func TestP2P_Connect(t *testing.T) {
