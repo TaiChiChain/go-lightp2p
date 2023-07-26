@@ -116,7 +116,6 @@ func TestMockP2P_Broadcast(t *testing.T) {
 
 	data := []byte("test")
 
-	var receivers []*MockP2P
 	for i := 1; i <= receiveNum; i++ {
 		peer, err := NewMockP2P(peerIDs[i], mockHostManager, nil)
 		assert.Nil(t, err)
@@ -126,8 +125,6 @@ func TestMockP2P_Broadcast(t *testing.T) {
 		peer.SetMessageHandler(func(s Stream, msg []byte) {
 			assert.Equal(t, string(data), string(msg))
 		})
-
-		receivers = append(receivers, peer)
 	}
 
 	err = sender.Broadcast(peerIDs[1:], data)
@@ -253,6 +250,36 @@ func TestMockP2P_ParallelReceive(t *testing.T) {
 		go send(v)
 	}
 	wg.Wait()
+}
+
+func TestMockP2P_ReleaseStream(t *testing.T) {
+	peerIDs := []string{"1", "2"}
+	mockHostManager := GenMockHostManager(peerIDs)
+	peer1, err := NewMockP2P(peerIDs[0], mockHostManager, nil)
+	assert.Nil(t, err)
+	peer2, err := NewMockP2P(peerIDs[1], mockHostManager, nil)
+	assert.Nil(t, err)
+	err = peer1.Start()
+	assert.Nil(t, err)
+	err = peer2.Start()
+	assert.Nil(t, err)
+
+	stream, err := peer2.GetStream(peer1.PeerID())
+	assert.Nil(t, err)
+
+	peer1.SetMessageHandler(func(s Stream, msg []byte) {
+		defer peer1.ReleaseStream(s)
+
+		err = s.AsyncSend(msg)
+		assert.Nil(t, err)
+	})
+
+	msg := []byte("test")
+	res, err := stream.Send(msg)
+	assert.Nil(t, err)
+	assert.Equal(t, msg, res)
+
+	peer2.ReleaseStream(stream)
 }
 
 func genTestMessages(size int) [][]byte {

@@ -1,17 +1,21 @@
 package network
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/meshplus/bitxhub-kit/log"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/sirupsen/logrus"
 )
+
+var _ Network = (*MockP2P)(nil)
 
 var (
 	ErrMockP2PNotSupport = errors.New("mock p2p not support")
@@ -50,7 +54,7 @@ func NewMockP2P(peerID string, mockHostManager *MockHostManager, logger logrus.F
 		return nil, errors.New("the local address must be in MockHostManager")
 	}
 	if logger == nil {
-		logger = log.NewWithModule("mock_p2p")
+		logger = logrus.New().WithField("module", "mock_p2p")
 	}
 	filteredConnects := make(map[string]chan *mockMsg, len(mockHostManager.connects)-1)
 	for id := range mockHostManager.connects {
@@ -110,7 +114,7 @@ func (s *mockStream) RemotePeerAddr() ma.Multiaddr {
 func (s *mockStream) AsyncSend(msg []byte) error {
 	connect, exist := s.host.connects[s.remotePeer]
 	if !exist {
-		return errors.New(fmt.Sprintf("remote peer [%s] not exist", s.remotePeer))
+		return fmt.Errorf("remote peer [%s] not exist", s.remotePeer)
 	}
 	msgCopy := make([]byte, len(msg))
 	copy(msgCopy, msg)
@@ -139,7 +143,7 @@ func (s *mockStream) AsyncSend(msg []byte) error {
 func (s *mockStream) Send(msg []byte) ([]byte, error) {
 	connect, exist := s.host.connects[s.remotePeer]
 	if !exist {
-		return nil, errors.New(fmt.Sprintf("remote peer [%s] not exist", s.remotePeer))
+		return nil, fmt.Errorf("remote peer [%s] not exist", s.remotePeer)
 	}
 	msgCopy := make([]byte, len(msg))
 	copy(msgCopy, msg)
@@ -162,17 +166,23 @@ func (s *mockStream) Send(msg []byte) ([]byte, error) {
 	}
 	s.isConnected = true
 	s.lock.Unlock()
-	res := <-s.receiveCh
+	res, ok := <-s.receiveCh
+	if !ok {
+		return nil, io.EOF
+	}
 	return res.data, nil
 }
 
 func (s *mockStream) Read(timeout time.Duration) ([]byte, error) {
 	_, exist := s.host.connects[s.remotePeer]
 	if !exist {
-		return nil, errors.New(fmt.Sprintf("remote peer [%s] not exist", s.remotePeer))
+		return nil, fmt.Errorf("remote peer [%s] not exist", s.remotePeer)
 	}
 	select {
-	case res := <-s.receiveCh:
+	case res, ok := <-s.receiveCh:
+		if !ok {
+			return nil, io.EOF
+		}
 		return res.data, nil
 	case <-time.After(timeout):
 		return nil, errors.New("timeout")
@@ -196,6 +206,10 @@ func (m *MockP2P) Stop() error {
 	panic(ErrMockP2PNotSupport)
 }
 
+func (m *MockP2P) BootstrapConnect() error {
+	return nil
+}
+
 func (m *MockP2P) Connect(addr peer.AddrInfo) error {
 	panic(ErrMockP2PNotSupport)
 }
@@ -204,7 +218,13 @@ func (m *MockP2P) Disconnect(string) error {
 	panic(ErrMockP2PNotSupport)
 }
 
+func (m *MockP2P) LocalAddrs() []ma.Multiaddr {
+	panic(ErrMockP2PNotSupport)
+}
+
 func (m *MockP2P) SetConnectCallback(callback ConnectCallback) {}
+
+func (m *MockP2P) SetDisconnectCallback(callback DisconnectCallback) {}
 
 func (m *MockP2P) SetMessageHandler(handler MessageHandler) {
 	m.messageHandler = handler
@@ -291,8 +311,8 @@ func (m *MockP2P) GetStream(peerID string) (Stream, error) {
 
 func (m *MockP2P) ReleaseStream(s Stream) {
 	stream := s.(*mockStream)
+	// release stream only need release send msg channel
 	close(stream.sendCh)
-	close(stream.receiveCh)
 }
 
 func (m *MockP2P) PeerID() string {
@@ -300,7 +320,7 @@ func (m *MockP2P) PeerID() string {
 }
 
 func (m *MockP2P) PrivKey() crypto.PrivKey {
-	panic(ErrMockP2PNotSupport)
+	return nil
 }
 
 func (m *MockP2P) PeerInfo(peerID string) (peer.AddrInfo, error) {
@@ -348,4 +368,20 @@ func (m *MockP2P) FindProvidersAsync(peerID string, i int) (<-chan peer.AddrInfo
 
 func (m *MockP2P) Provider(peerID string, passed bool) error {
 	panic(ErrMockP2PNotSupport)
+}
+
+// Ping pings target peer.
+func (m *MockP2P) Ping(ctx context.Context, peerID string) (<-chan ping.Result, error) {
+	start := time.Now()
+	_, err := m.Send(peerID, []byte{1})
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan ping.Result, 1)
+	ch <- ping.Result{
+		RTT:   time.Since(start),
+		Error: nil,
+	}
+	return ch, nil
 }
