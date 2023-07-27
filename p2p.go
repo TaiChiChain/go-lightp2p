@@ -3,127 +3,130 @@ package network
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
-	connmgr "github.com/libp2p/go-libp2p-connmgr"
-	crypto2 "github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/peerstore"
-	"github.com/libp2p/go-libp2p-core/routing"
-	crypto "github.com/libp2p/go-libp2p-crypto"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	ddht "github.com/libp2p/go-libp2p-kad-dht/dual"
+	kbucket "github.com/libp2p/go-libp2p-kbucket"
+	connmgr "github.com/libp2p/go-libp2p/core/connmgr"
+	crypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/core/routing"
+	connmgrimpl "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
-const module = "lightp2p"
+var (
+	reconnectInterval = 10 * time.Second
+	newStreamTimeout  = 5 * time.Second
+)
 
 var _ Network = (*P2P)(nil)
 
-var (
-	connectTimeout           = 10 * time.Second
-	sendTimeout              = 2 * time.Second
-	waitTimeout              = 2 * time.Second
-	reusableProtocolIndex    = 0
-	nonReusableProtocolIndex = 1
-)
+type dhtValidator struct{}
 
-type P2P struct {
-	config          *Config
-	host            host.Host // manage all connections
-	streamMng       *streamMgr
-	connectCallback ConnectCallback
-	messageHandler  MessageHandler
-	logger          logrus.FieldLogger
-	Routing         routing.Routing
-
-	pingServer *ping.PingService
-	ctx        context.Context
-	cancel     context.CancelFunc
+// Validate validates the given record, returning an error if it's
+// invalid (e.g., expired, signed by the wrong key, etc.).
+func (v *dhtValidator) Validate(key string, value []byte) error {
+	return nil
 }
 
-func New(options ...Option) (*P2P, error) {
+// Select selects the best record from the set of records (e.g., the
+// newest).
+//
+// Decisions made by select should be stable.
+func (v *dhtValidator) Select(key string, values [][]byte) (int, error) {
+	return 0, nil
+}
+
+type P2P struct {
+	config             *Config
+	host               host.Host // manage all connections
+	connectCallback    ConnectCallback
+	disconnectCallback DisconnectCallback
+	messageHandler     MessageHandler
+	logger             logrus.FieldLogger
+	router             routing.Routing
+	pingServer         *ping.PingService
+	ctx                context.Context
+}
+
+func New(ctx context.Context, options ...Option) (*P2P, error) {
 	conf, err := generateConfig(options...)
 	if err != nil {
 		return nil, fmt.Errorf("generate config: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	opts := []libp2p.Option{
 		libp2p.Identity(conf.privKey),
-		libp2p.ListenAddrStrings(conf.localAddr),
+		libp2p.NoListenAddrs,
 		libp2p.ConnectionGater(conf.gater),
 	}
 
-	if conf.transportID != "" && conf.transport != nil {
-		opts = append(opts, libp2p.Security(conf.transportID, conf.transport))
+	switch conf.securityType {
+	case SecurityDisable:
+		opts = append(opts, libp2p.NoSecurity)
+	case SecurityNoise:
+		opts = append(opts, libp2p.Security(libp2ptls.ID, noise.New))
+	case SecurityTLS:
+		opts = append(opts, libp2p.Security(libp2ptls.ID, libp2ptls.New))
 	}
 
 	if conf.connMgr != nil && conf.connMgr.enabled {
-		opts = append(opts, libp2p.ConnectionManager(newConnManager(conf.connMgr)))
+		c, err := newConnManager(conf.connMgr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to new conn manager: %w", err)
+		}
+		opts = append(opts, libp2p.ConnectionManager(c))
 	}
 
-	h, err := libp2p.New(ctx, opts...)
+	h, err := libp2p.New(opts...)
 	if err != nil {
-		cancel()
 		return nil, errors.Wrap(err, "failed on create p2p host")
 	}
 
 	pingServer := ping.NewPingService(h)
 
-	addrInfos := make([]peer.AddrInfo, 0, len(conf.bootstrap))
-	for i, pAddr := range conf.bootstrap {
-		addr, err := ma.NewMultiaddr(pAddr)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed on create new multi addr %d", i)
-		}
-
-		addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed on get addr info from multi addr %d", i)
-		}
-
-		addrInfos = append(addrInfos, *addrInfo)
+	dhtopts := []dht.Option{
+		dht.Mode(dht.ModeServer),
+		dht.Validator(&dhtValidator{}),
+		dht.ProtocolPrefix(conf.protocolID),
 	}
-
-	routing, err := ddht.New(ctx, h, dht.BootstrapPeers(addrInfos...))
+	dynamicRouting, err := dht.New(ctx, h, dhtopts...)
 	if err != nil {
-		cancel()
 		return nil, errors.Wrap(err, "failed on create dht")
-	}
-
-	if conf.notify != nil {
-		h.Network().Notify(conf.notify)
 	}
 
 	p2p := &P2P{
 		config:     conf,
 		host:       h,
-		streamMng:  newStreamMng(ctx, h, conf.protocolIDs[reusableProtocolIndex], conf.logger),
 		logger:     conf.logger,
-		Routing:    routing,
+		router:     dynamicRouting,
 		pingServer: pingServer,
 		ctx:        ctx,
-		cancel:     cancel,
 	}
 
 	return p2p, nil
 }
 
-func newConnManager(cfg *connMgr) *connmgr.BasicConnMgr {
+func newConnManager(cfg *connMgr) (connmgr.ConnManager, error) {
 	if cfg == nil || !cfg.enabled {
-		return nil
+		return nil, nil
 	}
 
-	return connmgr.NewConnManager(cfg.lo, cfg.hi, cfg.grace)
+	return connmgrimpl.NewConnManager(cfg.lo, cfg.hi, connmgrimpl.WithGracePeriod(cfg.grace))
 }
 
 func (p2p *P2P) Ping(ctx context.Context, peerID string) (<-chan ping.Result, error) {
@@ -138,11 +141,37 @@ func (p2p *P2P) Ping(ctx context.Context, peerID string) (<-chan ping.Result, er
 
 // Start start the network service.
 func (p2p *P2P) Start() error {
-	p2p.host.SetStreamHandler(p2p.config.protocolIDs[reusableProtocolIndex], p2p.handleNewStreamReusable)
-	if len(p2p.config.protocolIDs) > 1 {
-		p2p.host.SetStreamHandler(p2p.config.protocolIDs[nonReusableProtocolIndex], p2p.handleNewStream)
+	p2p.host.SetStreamHandler(p2p.config.protocolID, p2p.handleNewStream)
+	p2p.host.Network().Notify(p2p)
+
+	a, err := ma.NewMultiaddr(p2p.config.localAddr)
+	if err != nil {
+		return errors.Wrapf(err, "listen address[%s] format error", p2p.config.localAddr)
 	}
-	//construct Bootstrap node's peer info
+	err = p2p.host.Network().Listen(a)
+	if err != nil {
+		return errors.Wrapf(err, "listen on %s failed", p2p.config.localAddr)
+	}
+
+	if err := p2p.router.Bootstrap(p2p.ctx); err != nil {
+		return errors.Wrap(err, "failed on bootstrap kad dht")
+	}
+
+	if !p2p.config.disableAutoBootstrap {
+		err := p2p.BootstrapConnect()
+		if err != nil {
+			p2p.logger.WithFields(logrus.Fields{"error": err}).Warn("Connect all bootstrap node failed")
+		}
+	}
+
+	p2p.logger.Info("Start p2p success")
+	return nil
+}
+
+// BootstrapConnect refer to ipfs bootstrap
+// connect to bootstrap peers concurrently
+func (p2p *P2P) BootstrapConnect() error {
+	// construct Bootstrap node's peer info
 	var peers []peer.AddrInfo
 	for _, maAddr := range p2p.config.bootstrap {
 		pi, err := AddrToPeerInfo(maAddr)
@@ -151,33 +180,13 @@ func (p2p *P2P) Start() error {
 		}
 		peers = append(peers, *pi)
 	}
-	//if Bootstrap addr has config then connect it
-	if len(peers) > 0 {
-		err := p2p.BootstrapConnect(p2p.ctx, p2p.host, peers)
-		if err != nil {
-			p2p.logger.WithFields(logrus.Fields{"module": module, "error": err}).Warn("connect bootstrap peer error")
-		}
+
+	if len(peers) == 0 {
+		return nil
 	}
 
-	if err := p2p.Routing.Bootstrap(p2p.ctx); err != nil {
-		return errors.Wrap(err, "failed on bootstrap kad dht")
-	}
-
-	p2p.logger.WithFields(logrus.Fields{"module": module}).Info("start p2p success")
-	return nil
-}
-
-//// BootstrapConnect refer to ipfs bootstrap
-//// connect to bootstrap peers concurrently
-func (p2p *P2P) BootstrapConnect(ctx context.Context, ph host.Host, peers []peer.AddrInfo) error {
-	if len(peers) < 1 {
-		return errors.New("not enough bootstrap peers")
-	}
-
-	errs := make(chan error, len(peers))
 	var wg sync.WaitGroup
 	for _, p := range peers {
-
 		// performed asynchronously because when performed synchronously, if
 		// one `Connect` call hangs, subsequent calls are more likely to
 		// fail/abort due to an expiring context.
@@ -186,42 +195,80 @@ func (p2p *P2P) BootstrapConnect(ctx context.Context, ph host.Host, peers []peer
 		wg.Add(1)
 		go func(p peer.AddrInfo) {
 			defer wg.Done()
-			fmt.Printf("%s bootstrapping to %s", ph.ID().Pretty(), p.ID.Pretty())
-
-			ph.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.PermanentAddrTTL)
-			if err := ph.Connect(ctx, p); err != nil {
-				fmt.Printf("failed to bootstrap with %v: %s", p.ID, err)
-				errs <- err
+			if err := p2p.Connect(p); err != nil {
+				p2p.logger.WithFields(logrus.Fields{"node": p.ID.String(), "err": err}).Info("Connect bootstrap node failed")
 				return
 			}
-			fmt.Printf("bootstrapDialSuccess with %s", p.ID.Pretty())
-			if p2p.connectCallback != nil {
-				p2p.connectCallback(p.ID.String())
-			}
+
+			p2p.logger.WithFields(logrus.Fields{"node": p.ID.String()}).Info("Connect bootstrap node success")
 		}(p)
 	}
 	wg.Wait()
 
-	// our failure condition is when no connection attempt succeeded.
-	// So drain the errs channel, counting the results.
-	close(errs)
-	count := 0
-	var err error
-	for err = range errs {
+	go p2p.reconnectBootstrap()
+	return nil
+}
+
+// reBootstrap regularly attempts to bootstrap .
+// This should ensure that we auto-recover from situations in
+// which the network was completely gone and we lost all peers.
+func (p2p *P2P) reconnectBootstrap() {
+	ticker := time.NewTicker(reconnectInterval)
+	defer ticker.Stop()
+
+	bootstrapPeers := make([]peer.AddrInfo, 0, len(p2p.config.bootstrap))
+	for _, pAddr := range p2p.config.bootstrap {
+		addr, err := ma.NewMultiaddr(pAddr)
 		if err != nil {
-			count++
+			p2p.logger.WithFields(logrus.Fields{"node": pAddr, "err": err}).Error("Invalid bootstrap address")
+			return
 		}
-	}
-	if count == len(peers) {
-		return fmt.Errorf("failed to bootstrap. %s", err)
+
+		addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
+		if err != nil {
+			p2p.logger.WithFields(logrus.Fields{"node": pAddr, "err": err}).Error("Failed on get address info")
+			return
+		}
+
+		bootstrapPeers = append(bootstrapPeers, *addrInfo)
 	}
 
-	return nil
+	for {
+		select {
+		case <-p2p.ctx.Done():
+			return
+		case <-ticker.C:
+			connected := p2p.bootstrap(bootstrapPeers)
+			for _, p := range connected {
+				p2p.logger.WithFields(logrus.Fields{"node": p.String()}).Info("Reconnect to bootstrap node success")
+			}
+		}
+	}
+}
+
+func (p2p *P2P) bootstrap(bootstrapPeers []peer.AddrInfo) []peer.ID {
+	var connectedPeers []peer.ID
+	for _, bootstrap := range bootstrapPeers {
+		if p2p.IsConnected(bootstrap.ID.String()) {
+			// We are connected, assume success and do not try
+			// to re-connect
+			continue
+		}
+
+		err := p2p.Connect(bootstrap)
+		if err != nil {
+			p2p.logger.WithFields(logrus.Fields{"node": bootstrap.ID, "err": err}).Error("Reconnect to bootstrap node failed")
+			continue
+		}
+		connectedPeers = append(connectedPeers, bootstrap.ID)
+	}
+
+	return connectedPeers
 }
 
 // Connect peer.
 func (p2p *P2P) Connect(addr peer.AddrInfo) error {
-	ctx, cancel := context.WithTimeout(p2p.ctx, connectTimeout)
+	ctx, cancel := context.WithTimeout(p2p.ctx, p2p.config.connectTimeout)
 	defer cancel()
 
 	if err := p2p.host.Connect(ctx, addr); err != nil {
@@ -230,17 +277,15 @@ func (p2p *P2P) Connect(addr peer.AddrInfo) error {
 
 	p2p.host.Peerstore().AddAddrs(addr.ID, addr.Addrs, peerstore.PermanentAddrTTL)
 
-	if p2p.connectCallback != nil {
-		if err := p2p.connectCallback(addr.ID.String()); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
 func (p2p *P2P) SetConnectCallback(callback ConnectCallback) {
 	p2p.connectCallback = callback
+}
+
+func (p2p *P2P) SetDisconnectCallback(callback DisconnectCallback) {
+	p2p.disconnectCallback = callback
 }
 
 func (p2p *P2P) SetMessageHandler(handler MessageHandler) {
@@ -249,19 +294,15 @@ func (p2p *P2P) SetMessageHandler(handler MessageHandler) {
 
 // AsyncSend message to peer with specific id.
 func (p2p *P2P) AsyncSend(peerID string, msg []byte) error {
-	if _, err := p2p.FindPeer(peerID); err != nil {
-		return errors.Wrap(err, "failed on find peer")
-	}
-
-	s, err := p2p.streamMng.get(peerID)
+	s, err := p2p.newStream(peerID)
 	if err != nil {
-		return errors.Wrap(err, "failed on get stream")
+		return err
 	}
+	defer p2p.ReleaseStream(s)
 
 	if err := p2p.send(s, msg); err != nil {
 		return err
 	}
-	p2p.streamMng.release(s)
 	return nil
 }
 
@@ -270,26 +311,22 @@ func (p2p *P2P) AsyncSendWithStream(s Stream, msg []byte) error {
 }
 
 func (p2p *P2P) Send(peerID string, msg []byte) ([]byte, error) {
-	if _, err := p2p.FindPeer(peerID); err != nil {
-		return nil, errors.Wrap(err, "failed on find peer")
-	}
-
-	s, err := p2p.streamMng.get(peerID)
+	s, err := p2p.newStream(peerID)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed on get stream")
+		return nil, err
 	}
+	defer p2p.ReleaseStream(s)
 
 	if err := p2p.send(s, msg); err != nil {
 		return nil, errors.Wrap(err, "failed on send msg")
 	}
 
-	defer p2p.streamMng.release(s)
-	recvMsg, err := waitMsg(s.stream, waitTimeout)
+	recvMsg, err := waitMsg(s.stream, p2p.config.readTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	return recvMsg.Data, nil
+	return recvMsg, nil
 }
 
 func (p2p *P2P) Broadcast(ids []string, msg []byte) error {
@@ -308,8 +345,6 @@ func (p2p *P2P) Broadcast(ids []string, msg []byte) error {
 
 // Stop stop the network service.
 func (p2p *P2P) Stop() error {
-	p2p.streamMng.stop()
-	p2p.cancel()
 	return p2p.host.Close()
 }
 
@@ -354,45 +389,43 @@ func (p2p *P2P) GetPeers() []peer.AddrInfo {
 }
 
 func (p2p *P2P) LocalAddr() string {
+	localhostAddr := ""
+	for _, addr := range p2p.host.Addrs() {
+		addrStr := addr.String()
+		if strings.HasPrefix(addrStr, "/ip4/") {
+			if !strings.Contains(addrStr, "127.0.0.1") {
+				// priority use of intranet addresses
+				return addrStr
+			}
+			localhostAddr = addrStr
+		}
+	}
+	if localhostAddr != "" {
+		return localhostAddr
+	}
 	return p2p.config.localAddr
 }
 
+func (p2p *P2P) listenPort() (int, error) {
+	strs := strings.Split(p2p.host.Addrs()[0].String(), "/")
+	return strconv.Atoi(strs[len(strs)-1])
+}
+
 func (p2p *P2P) GetStream(peerID string) (Stream, error) {
-	if _, err := p2p.FindPeer(peerID); err != nil {
-		return nil, errors.Wrap(err, "failed on find peer")
-	}
-
-	pid, err := peer.Decode(peerID)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed on decode peer id")
-	}
-
-	s, err := p2p.host.NewStream(p2p.ctx, pid, p2p.config.protocolIDs[nonReusableProtocolIndex])
-	if err != nil {
-		return nil, errors.Wrap(err, "failed on create new stream")
-	}
-
-	return newStream(s, p2p.config.protocolIDs[nonReusableProtocolIndex], DirOutbound), nil
+	return p2p.newStream(peerID)
 }
 
 func (p2p *P2P) ReleaseStream(s Stream) {
 	stream, ok := s.(*stream)
 	if !ok {
-		p2p.logger.Error("stream type error")
 		return
 	}
 
-	if stream.getProtocolID() == p2p.config.protocolIDs[nonReusableProtocolIndex] {
-		stream.close()
-		return
-	}
-
-	if stream.getProtocolID() == p2p.config.protocolIDs[reusableProtocolIndex] {
-		if stream.getDirection() == DirOutbound {
-			if stream.isValid() {
-				p2p.streamMng.release(stream)
-			}
+	if stream.getProtocolID() == p2p.config.protocolID {
+		if err := stream.close(); err != nil {
+			p2p.logger.WithField("err", err).Warn("Failed to release stream")
 		}
+		return
 	}
 }
 
@@ -410,7 +443,7 @@ func (p2p *P2P) PeerInfo(peerID string) (peer.AddrInfo, error) {
 	return p2p.host.Peerstore().PeerInfo(pid), nil
 }
 
-func (p2p *P2P) GetRemotePubKey(id peer.ID) (crypto2.PubKey, error) {
+func (p2p *P2P) GetRemotePubKey(id peer.ID) (crypto.PubKey, error) {
 	conns := p2p.host.Network().ConnsToPeer(id)
 
 	for _, conn := range conns {
@@ -425,7 +458,12 @@ func (p2p *P2P) PeersNum() int {
 }
 
 func (p2p *P2P) IsConnected(peerID string) bool {
-	return p2p.host.Network().Connectedness(peer.ID(peerID)) == network.Connected
+	id, err := peer.Decode(peerID)
+	if err != nil {
+		p2p.logger.WithFields(logrus.Fields{"error": err, "node": id}).Error("Decode node id failed")
+		return false
+	}
+	return p2p.host.Network().Connectedness(id) == network.Connected
 }
 
 func (p2p *P2P) FindPeer(peerID string) (peer.AddrInfo, error) {
@@ -433,8 +471,8 @@ func (p2p *P2P) FindPeer(peerID string) (peer.AddrInfo, error) {
 	if err != nil {
 		return peer.AddrInfo{}, fmt.Errorf("failed on decode peer id:%v", err)
 	}
-	ctx, _ := context.WithTimeout(context.Background(), 1*time.Second)
-	return p2p.Routing.FindPeer(ctx, id)
+
+	return p2p.router.FindPeer(p2p.ctx, id)
 }
 
 func (p2p *P2P) Provider(peerID string, passed bool) error {
@@ -446,7 +484,7 @@ func (p2p *P2P) Provider(peerID string, passed bool) error {
 	if err != nil {
 		return fmt.Errorf("failed on cast cid: %v", err)
 	}
-	return p2p.Routing.Provide(p2p.ctx, ccid, passed)
+	return p2p.router.Provide(p2p.ctx, ccid, passed)
 }
 
 func (p2p *P2P) FindProvidersAsync(peerID string, i int) (<-chan peer.AddrInfo, error) {
@@ -454,6 +492,68 @@ func (p2p *P2P) FindProvidersAsync(peerID string, i int) (<-chan peer.AddrInfo, 
 	if err != nil {
 		return nil, fmt.Errorf("failed on cast cid: %v", err)
 	}
-	peerInfoC := p2p.Routing.FindProvidersAsync(p2p.ctx, ccid, i)
+	peerInfoC := p2p.router.FindProvidersAsync(p2p.ctx, ccid, i)
 	return peerInfoC, nil
+}
+
+func (p2p *P2P) newStream(peerID string) (*stream, error) {
+	if _, err := p2p.FindPeer(peerID); err != nil {
+		// if network busy cause disconnected, try to connect
+		if errors.Cause(err) != kbucket.ErrLookupFailure {
+			return nil, errors.Wrap(err, "failed on find peer")
+		}
+
+		// try to connect
+		peerInfo, err := p2p.PeerInfo(peerID)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get peer info")
+		}
+		if err := p2p.Connect(peerInfo); err != nil {
+			return nil, errors.Wrap(err, "try to connect peer failed")
+		}
+		p2p.logger.WithFields(logrus.Fields{"node": peerID}).Info("Reconnect node success")
+	}
+
+	pid, err := peer.Decode(peerID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(p2p.ctx, newStreamTimeout)
+	defer cancel()
+	s, err := p2p.host.NewStream(ctx, pid, p2p.config.protocolID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed on create stream")
+	}
+
+	return newStream(s, p2p.config.protocolID, p2p.config.sendTimeout, p2p.config.readTimeout), nil
+}
+
+// called when network starts listening on an addr
+func (p2p *P2P) Listen(net network.Network, addr ma.Multiaddr) {
+
+}
+
+// called when network stops listening on an addr
+func (p2p *P2P) ListenClose(net network.Network, addr ma.Multiaddr) {
+
+}
+
+// called when a connection opened
+func (p2p *P2P) Connected(net network.Network, conn network.Conn) {
+	p2p.logger.WithFields(logrus.Fields{"node": conn.RemotePeer().String(), "direction": conn.Stat().Direction.String()}).Info("Node connected")
+
+	if p2p.connectCallback != nil {
+		if err := p2p.connectCallback(net, conn); err != nil {
+			p2p.logger.WithFields(logrus.Fields{"error": err, "node": conn.RemotePeer().String()}).Error("Failed on node connected callback")
+		}
+	}
+
+}
+
+// called when a connection closed
+func (p2p *P2P) Disconnected(net network.Network, conn network.Conn) {
+	p2p.logger.WithFields(logrus.Fields{"node": conn.RemotePeer().String()}).Warn("Node disconnected")
+	if p2p.disconnectCallback != nil {
+		p2p.disconnectCallback(conn.RemotePeer().String())
+	}
 }

@@ -4,89 +4,188 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"io"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/peer"
-	libp2pcert "github.com/meshplus/go-lightp2p/cert"
+	ic "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	protocolID1      string = "/test/1.0.0" // magic protocol
-	protocolID2      string = "/test/2.0.0" // magic protocol
-	repo_path               = "cert"
-	node_cert_path   string = "testdata/node.cert"
-	agency_cert_path string = "testdata/agency.cert"
-	ca_cert_path     string = "testdata/ca.cert"
+	protocolID string = "/test/1.0.0" // magic protocol
 )
 
-func TestP2P_Connect(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6001)
-	p2, addr2 := generateNetwork(t, 6002)
-
-	err := p1.Connect(addr2)
-	assert.Nil(t, err)
-
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
+func getAddr(p2p *P2P) (peer.AddrInfo, error) {
+	realAddr := fmt.Sprintf("%s/p2p/%s", p2p.LocalAddr(), p2p.PeerID())
+	multiaddr, err := ma.NewMultiaddr(realAddr)
+	if err != nil {
+		return peer.AddrInfo{}, err
+	}
+	addrInfo, err := peer.AddrInfoFromP2pAddr(multiaddr)
+	if err != nil {
+		return peer.AddrInfo{}, err
+	}
+	return *addrInfo, nil
 }
 
-func TestP2p_ConnectWithNullIDStore(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6003)
-	p2, addr2 := generateNetwork(t, 6004)
+type P2PWrapper struct {
+	*P2P
+	t              *testing.T
+	realAddr       peer.AddrInfo
+	realListenPort int
+	PID            peer.ID
+	sk             ic.PrivKey
+	opts           []Option
+}
 
-	err := p1.Connect(addr2)
+func (w *P2PWrapper) Reset() {
+	opts := []Option{
+		WithLocalAddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", w.realListenPort)),
+		WithPrivateKey(w.sk),
+		WithProtocolID(protocolID),
+		WithConnMgr(true, 10, 100, 20*time.Second),
+	}
+	opts = append(opts, w.opts...)
+	p2p, err := New(
+		context.Background(),
+		opts...,
+	)
+	assert.Nil(w.t, err)
+
+	err = p2p.Start()
+	assert.Nil(w.t, err)
+	w.P2P = p2p
+}
+
+func (w *P2PWrapper) ConnectP2P(t *P2PWrapper) {
+	err := w.Connect(t.realAddr)
+	assert.Nil(w.t, err)
+}
+
+func generateNetwork(t *testing.T, opts []Option) *P2PWrapper {
+	sk, pk, err := ic.GenerateECDSAKeyPair(rand.Reader)
 	assert.Nil(t, err)
-	err = p2.Connect(addr1)
+	pid, err := peer.IDFromPublicKey(pk)
 	assert.Nil(t, err)
+
+	addr := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", 0)
+
+	defaultOpts := []Option{
+		WithLocalAddr(addr),
+		WithPrivateKey(sk),
+		WithProtocolID(protocolID),
+		WithConnMgr(true, 10, 100, 20*time.Second),
+	}
+
+	p2p, err := New(
+		context.Background(),
+		append(defaultOpts, opts...)...,
+	)
+	assert.Nil(t, err)
+	err = p2p.Start()
+	assert.Nil(t, err)
+
+	realAddr, err := getAddr(p2p)
+	assert.Nil(t, err)
+	realPort, err := p2p.listenPort()
+	assert.Nil(t, err)
+
+	return &P2PWrapper{
+		P2P:            p2p,
+		t:              t,
+		realAddr:       realAddr,
+		realListenPort: realPort,
+		PID:            pid,
+		sk:             sk,
+		opts:           opts,
+	}
+}
+
+func generateNetworks(t *testing.T, cnt int, autoConnect bool, commonOpts []Option, customOptsSetter func(index int) []Option) []*P2PWrapper {
+	if commonOpts == nil {
+		commonOpts = []Option{}
+	}
+	if customOptsSetter == nil {
+		customOptsSetter = func(index int) []Option {
+			return []Option{}
+		}
+	}
+
+	p2ps := make([]*P2PWrapper, cnt)
+	for i := 0; i < cnt; i++ {
+		p2ps[i] = generateNetwork(t, append(commonOpts, customOptsSetter(i)...))
+	}
+
+	if autoConnect {
+		for i := 0; i < cnt; i++ {
+			for j := 0; j < cnt; j++ {
+				if i != j {
+					p2ps[i].ConnectP2P(p2ps[j])
+				}
+			}
+		}
+	}
+
+	t.Cleanup(func() {
+		for i := 0; i < cnt; i++ {
+			_ = p2ps[i].Stop()
+		}
+	})
+	time.Sleep(100 * time.Millisecond)
+	return p2ps
+}
+
+func TestP2P_Disconnect(t *testing.T) {
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
+	ch := make(chan string)
+	p1.SetDisconnectCallback(func(s string) {
+		ch <- s
+	})
+
+	go func() {
+		err := p2.Disconnect(p1.PeerID())
+		assert.Nil(t, err)
+	}()
+
+	var disconnectPeerID string
+	select {
+	case disconnectPeerID = <-ch:
+	case <-time.After(1 * time.Second):
+	}
+	assert.Equal(t, p2.PeerID(), disconnectPeerID)
 }
 
 func TestP2P_MultiStreamSend(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
-	fmt.Println(addr1)
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
 	msg := []byte("hello world")
 	ack := []byte("ack")
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("p2 received:", string(data))
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
 		err := s.AsyncSend(ack)
 		assert.Nil(t, err)
 	})
 
-	p1.SetConnectCallback(func(s string) error {
-
-		fmt.Println("p1: " + s)
-		return nil
-	})
-
-	//p2.SetConnectCallback(func(s string) error {
-	//	fmt.Println("p2: "+s)
-	//	return nil
-	//})
-
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
-	assert.Nil(t, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
-	testStreamNum := 1
+	testStreamNum := 100
 	var wg sync.WaitGroup
 
 	send := func(wg *sync.WaitGroup) {
 		defer wg.Done()
 		resp, err := p1.Send(p2.PeerID(), msg)
 		assert.Nil(t, err)
-		assert.EqualValues(t, resp, ack)
+		assert.Equal(t, resp, ack)
 	}
 
 	for i := 0; i < testStreamNum; i++ {
@@ -98,23 +197,16 @@ func TestP2P_MultiStreamSend(t *testing.T) {
 }
 
 func TestP2P_MultiStreamAsyncSend(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
-	fmt.Println(addr1)
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
 	msg := []byte("hello world")
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("p2 received:", string(data))
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
 	})
 
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
-	assert.Nil(t, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
 	testStreamNum := 100
 	var wg sync.WaitGroup
 
@@ -133,25 +225,19 @@ func TestP2P_MultiStreamAsyncSend(t *testing.T) {
 }
 
 func TestP2P_MultiStreamSendWithStream(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
 	msg := []byte("hello world")
 	ack := []byte("ack")
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("p2 received:", string(data))
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
 		err := s.AsyncSend(ack)
 		assert.Nil(t, err)
 	})
 
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
-	assert.Nil(t, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
 	testStreamNum := 100
 	var wg sync.WaitGroup
 
@@ -159,7 +245,7 @@ func TestP2P_MultiStreamSendWithStream(t *testing.T) {
 		defer wg.Done()
 		resp, err := p1.Send(p2.PeerID(), msg)
 		assert.Nil(t, err)
-		assert.EqualValues(t, resp, ack)
+		assert.Equal(t, resp, ack)
 	}
 
 	for i := 0; i < testStreamNum; i++ {
@@ -171,29 +257,22 @@ func TestP2P_MultiStreamSendWithStream(t *testing.T) {
 }
 
 func TestP2P_MultiStreamSendWithAsyncStream(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
-	fmt.Println(addr1)
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
 	msg := []byte("hello world")
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("p2 received:", string(data))
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
 	})
 
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
-	assert.Nil(t, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
 	testStreamNum := 100
 	var wg sync.WaitGroup
 
 	send := func(wg *sync.WaitGroup) {
 		defer wg.Done()
-		err = p1.AsyncSend(p2.PeerID(), msg)
+		err := p1.AsyncSend(p2.PeerID(), msg)
 		assert.Nil(t, err)
 	}
 
@@ -206,127 +285,125 @@ func TestP2P_MultiStreamSendWithAsyncStream(t *testing.T) {
 }
 
 func TestP2P_AsyncSend(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
 
 	msg := []byte("hello")
-
 	ch := make(chan struct{})
 
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("receive:", string(data))
-		assert.EqualValues(t, msg, data)
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		assert.Equal(t, msg, data)
 		close(ch)
 	})
 
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
+	err := p1.AsyncSend(p2.PeerID(), msg)
 	assert.Nil(t, err)
 
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
-
-	err = p1.AsyncSend(p2.PeerID(), msg)
-	assert.Nil(t, err)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
 
 	select {
 	case <-ch:
 		return
-	case <-ctx.Done():
+	case <-ctx1.Done():
 		assert.Error(t, fmt.Errorf("timeout"))
 		return
 	}
 }
 
-func TestSendWithNonReusableStream(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
-	msg := []byte("hello world")
-	ack := []byte("ack")
+func TestP2P_AsyncSendWithNetworkBusy(t *testing.T) {
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
+	msg := []byte("hello")
+
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("p2 received:", string(data))
-		err := s.AsyncSend(ack)
-		assert.Nil(t, err)
-		err = s.AsyncSend(ack)
-		assert.Nil(t, err)
-		p2.ReleaseStream(s)
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		wg.Done()
 	})
 
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
+	err := p1.AsyncSend(p2.PeerID(), msg)
 	assert.Nil(t, err)
 
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
+	time.Sleep(1 * time.Second)
+	// simulate network disconnect
+	assert.Nil(t, p2.Stop())
+	time.Sleep(1 * time.Second)
+	assert.False(t, p1.IsConnected(p2.PeerID()))
+
+	err = p1.AsyncSend(p2.PeerID(), msg)
+	assert.NotNil(t, err)
+	time.Sleep(5 * time.Second)
+
+	// recover p2
+	p2.Reset()
+	p2.SetMessageHandler(func(s Stream, data []byte) {
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		wg.Done()
+	})
+
+	// send message to p2
+	err = p1.AsyncSend(p2.PeerID(), msg)
 	assert.Nil(t, err)
 
-	s, err := p1.GetStream(p2.PeerID())
-	assert.Nil(t, err)
-	defer p1.ReleaseStream(s)
-	err = s.AsyncSend(msg)
-	assert.Nil(t, err)
-	for {
-		rawMsg, err := s.Read(2 * time.Second)
-		if err != nil {
-			if err != io.EOF {
-				t.Fatal(err)
-				return
-			}
-			return
-		}
-		assert.Equal(t, ack, rawMsg)
-	}
+	wg.Wait()
 }
 
-func TestSendWithReusableStream(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6005)
-	p2, addr2 := generateNetwork(t, 6006)
-	msg := []byte("hello world")
-	ack := []byte("ack")
+func TestP2P_SendWithNetworkBusy(t *testing.T) {
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
+	msg := []byte("hello")
+
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("p2 received:", string(data))
+		defer p2.ReleaseStream(s)
 		assert.Equal(t, msg, data)
-		err := s.AsyncSend(ack)
+		err := s.AsyncSend(data)
 		assert.Nil(t, err)
-		p2.ReleaseStream(s)
 	})
 
-	err := p1.Start()
+	rdata, err := p1.Send(p2.PeerID(), msg)
 	assert.Nil(t, err)
-	err = p2.Start()
-	assert.Nil(t, err)
+	assert.Equal(t, msg, rdata)
 
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
+	time.Sleep(1 * time.Second)
+	// simulate network disconnect
+	assert.Nil(t, p2.Stop())
+	time.Sleep(1 * time.Second)
+	assert.False(t, p1.IsConnected(p2.PeerID()))
 
-	rawMsg, err := p1.Send(p2.PeerID(), msg)
+	_, err = p1.Send(p2.PeerID(), msg)
+	assert.NotNil(t, err)
+
+	time.Sleep(5 * time.Second)
+	// recover p2
+	p2.Reset()
+	p2.SetMessageHandler(func(s Stream, data []byte) {
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		err := s.AsyncSend(data)
+		assert.Nil(t, err)
+	})
+
+	// send message to p2
+	recvData, err := p1.Send(p2.PeerID(), msg)
 	assert.Nil(t, err)
-	assert.Equal(t, ack, rawMsg)
+	assert.Equal(t, msg, recvData)
 }
 
 func TestP2p_MultiSend(t *testing.T) {
-	p1, addr1 := generateNetwork(t, 6007)
-	p2, addr2 := generateNetwork(t, 6008)
-
-	err := p1.Start()
-	assert.Nil(t, err)
-	err = p2.Start()
-	assert.Nil(t, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(t, err)
-	err = p2.Connect(addr1)
-	assert.Nil(t, err)
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
 
 	N := 50
 	msg := []byte("hello")
@@ -334,7 +411,8 @@ func TestP2p_MultiSend(t *testing.T) {
 	ch := make(chan struct{})
 
 	p2.SetMessageHandler(func(s Stream, data []byte) {
-		assert.EqualValues(t, msg, data)
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
 		count++
 		if count == N {
 			close(ch)
@@ -345,40 +423,162 @@ func TestP2p_MultiSend(t *testing.T) {
 	go func() {
 		for i := 0; i < N; i++ {
 			time.Sleep(200 * time.Microsecond)
-			err = p1.AsyncSend(p2.PeerID(), msg)
+			err := p1.AsyncSend(p2.PeerID(), msg)
 			assert.Nil(t, err)
 		}
 
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
 
 	select {
 	case <-ch:
 		return
-	case <-ctx.Done():
+	case <-ctx1.Done():
 		assert.Error(t, fmt.Errorf("timeout"))
 	}
 }
 
 func TestP2P_FindPeer(t *testing.T) {
-	bootstrap1, bsAddr1 := generateNetwork(t, 6007)
-	bootstrap2, bsAddr2 := generateNetwork(t, 6008)
-	bootstrap3, bsAddr3 := generateNetwork(t, 6011)
-	_, bsAddr4 := generateNetwork(t, 6014)
+	p2ps := generateNetworks(t, 4, false, nil, nil)
+	bootstrap1 := p2ps[0]
+	bootstrap2 := p2ps[1]
+	bootstrap3 := p2ps[2]
+	bootstrap4 := p2ps[3]
+	bsAddr4 := bootstrap4.realAddr
 
-	err := bootstrap1.Start()
+	bootstrap2.ConnectP2P(bootstrap1)
+	bootstrap3.ConnectP2P(bootstrap1)
+
+	addrs1, err := peer.AddrInfoToP2pAddrs(&bootstrap1.realAddr)
 	require.Nil(t, err)
-	err = bootstrap2.Start()
+	addrs2, err := peer.AddrInfoToP2pAddrs(&bootstrap2.realAddr)
 	require.Nil(t, err)
-	err = bootstrap3.Start()
+	addrs3, err := peer.AddrInfoToP2pAddrs(&bootstrap3.realAddr)
 	require.Nil(t, err)
 
-	err = bootstrap1.Connect(bsAddr2)
+	var bs1 = []string{addrs1[0].String()}
+	var bs2 = []string{addrs2[0].String()}
+	var bs3 = []string{addrs3[0].String()}
+
+	p2ps2 := generateNetworks(t, 3, false, nil, func(index int) []Option {
+		switch index {
+		case 0:
+			return []Option{WithBootstrap(bs1)}
+		case 1:
+			return []Option{WithBootstrap(bs2)}
+		case 2:
+			return []Option{WithBootstrap(bs3)}
+		}
+		return []Option{}
+	})
+	dht1 := p2ps2[0]
+	s1 := dht1.realAddr
+	id1 := dht1.PeerID()
+	dht2 := p2ps2[1]
+	s2 := dht2.realAddr
+	id2 := dht2.PeerID()
+	dht3 := p2ps2[2]
+	id3 := dht3.PeerID()
+
+	time.Sleep(1 * time.Second)
+
+	err = dht3.Provider(bsAddr4.ID.String(), true)
 	require.Nil(t, err)
 
-	err = bootstrap2.Connect(bsAddr3)
+	findPeer1, err := dht1.FindPeer(id2)
+	require.Nil(t, err)
+	require.True(t, strings.Contains(findPeer1.String(), s2.String()))
+
+	findPeer2, err := dht2.FindPeer(id1)
+	require.Nil(t, err)
+	require.True(t, strings.Contains(findPeer2.String(), s1.String()))
+
+	_, err = dht1.FindPeer(id3)
+	require.Nil(t, err)
+
+	_, err = dht3.FindPeer(id1)
+	require.Nil(t, err)
+
+	findPeerC, err := dht1.FindProvidersAsync(bsAddr4.ID.String(), 1)
+	require.Nil(t, err)
+	<-findPeerC
+}
+
+func TestP2P_ConnMgr(t *testing.T) {
+	p2ps := generateNetworks(t, 3, true, nil, nil)
+	bootstrap1 := p2ps[0]
+	bsAddr1 := bootstrap1.realAddr
+	bootstrap2 := p2ps[1]
+	bsAddr2 := bootstrap2.realAddr
+
+	addrs1, err := peer.AddrInfoToP2pAddrs(&bsAddr1)
+	require.Nil(t, err)
+	addrs2, err := peer.AddrInfoToP2pAddrs(&bsAddr2)
+	require.Nil(t, err)
+	msg := []byte("hello")
+
+	ch := make(chan struct{})
+
+	var bs1 = []string{addrs1[0].String()}
+	var bs2 = []string{addrs2[0].String()}
+	p2ps2 := generateNetworks(t, 2, false, nil, func(index int) []Option {
+		switch index {
+		case 0:
+			return []Option{WithBootstrap(bs1)}
+		case 1:
+			return []Option{WithBootstrap(bs2)}
+		}
+		return []Option{}
+	})
+	dht1 := p2ps2[0]
+	dht2 := p2ps2[1]
+	id2 := dht2.PeerID()
+
+	dht2.SetMessageHandler(func(s Stream, data []byte) {
+		defer dht2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		close(ch)
+	})
+
+	time.Sleep(1 * time.Second)
+
+	err = dht1.AsyncSend(id2, msg)
+	assert.Nil(t, err)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	select {
+	case <-ch:
+		return
+	case <-ctx1.Done():
+		assert.Error(t, fmt.Errorf("timeout"))
+		return
+	}
+}
+
+func TestP2P_GetSwarmAllPeers(t *testing.T) {
+	ns := "QmTZPmuE4AP4AacBDdst7TNK5iBir3uwHvMX8tD9doZ4c7"
+
+	p2ps := generateNetworks(t, 3, true, nil, nil)
+	bootstrap1 := p2ps[0]
+	bsAddr1 := bootstrap1.realAddr
+	bootstrap2 := p2ps[1]
+	bsAddr2 := bootstrap2.realAddr
+	bootstrap3 := p2ps[2]
+	bsAddr3 := bootstrap3.realAddr
+
+	// 1 ---> 2
+	err := bootstrap1.Provider(ns, true)
+	require.Nil(t, err)
+
+	// 2 ---> 3
+	err = bootstrap2.Provider(ns, true)
+	require.Nil(t, err)
+
+	// 3 ---> 4
+	err = bootstrap3.Provider(ns, true)
 	require.Nil(t, err)
 
 	addrs1, err := peer.AddrInfoToP2pAddrs(&bsAddr1)
@@ -391,257 +591,61 @@ func TestP2P_FindPeer(t *testing.T) {
 	var bs1 = []string{addrs1[0].String()}
 	var bs2 = []string{addrs2[0].String()}
 	var bs3 = []string{addrs3[0].String()}
-	dht1, s1, id1 := generateNetworkWithDHT(t, 6009, bs1)
-	dht2, s2, id2 := generateNetworkWithDHT(t, 6010, bs2)
-	dht3, s3, id3 := generateNetworkWithDHT(t, 6012, bs3)
-
-	err = dht1.Start()
-	require.Nil(t, err)
-	err = dht2.Start()
-	require.Nil(t, err)
-	err = dht3.Start()
-	require.Nil(t, err)
-
-	err = dht3.Provider(bsAddr4.ID.String(), true)
-	require.Nil(t, err)
-
-	findPeer1, err := dht1.FindPeer(id2.String())
-	require.Nil(t, err)
-	require.Equal(t, s2.String(), findPeer1.String())
-
-	findPeer2, err := dht2.FindPeer(id1.String())
-	require.Nil(t, err)
-	require.Equal(t, s1.String(), findPeer2.String())
-
-	findPeer3, err := dht1.FindPeer(id3.String())
-	require.Nil(t, err)
-	require.Equal(t, s3.String(), findPeer3.String())
-
-	findPeer4, err := dht3.FindPeer(id1.String())
-	require.Nil(t, err)
-	require.Equal(t, s1.String(), findPeer4.String())
-
-	findPeerC, err := dht1.FindProvidersAsync(bsAddr4.ID.String(), 1)
-	require.Nil(t, err)
-	findPeer5 := <-findPeerC
-	require.Equal(t, s3.String(), findPeer5.String())
-}
-
-func TestP2P_ConnMgr(t *testing.T) {
-	bootstrap1, bsAddr1 := generateNetwork(t, 6007)
-	bootstrap2, bsAddr2 := generateNetwork(t, 6008)
-	bootstrap3, bsAddr3 := generateNetwork(t, 6011)
-
-	err := bootstrap1.Start()
-	require.Nil(t, err)
-	err = bootstrap2.Start()
-	require.Nil(t, err)
-	err = bootstrap3.Start()
-	require.Nil(t, err)
-
-	err = bootstrap1.Connect(bsAddr2)
-	require.Nil(t, err)
-
-	err = bootstrap2.Connect(bsAddr3)
-	require.Nil(t, err)
-
-	addrs1, err := peer.AddrInfoToP2pAddrs(&bsAddr1)
-	require.Nil(t, err)
-	addrs2, err := peer.AddrInfoToP2pAddrs(&bsAddr2)
-	require.Nil(t, err)
-	msg := []byte("hello")
-
-	ch := make(chan struct{})
-
-	var bs1 = []string{addrs1[0].String()}
-	var bs2 = []string{addrs2[0].String()}
-	dht1, s1, id1 := generateNetworkWithDHT(t, 6009, bs1)
-	dht2, s2, id2 := generateNetworkWithDHT(t, 6010, bs2)
-	fmt.Println(s1, id1)
-	fmt.Println(s2, id2)
-	dht2.SetMessageHandler(func(s Stream, data []byte) {
-		fmt.Println("receive:", string(data))
-		assert.EqualValues(t, msg, data)
-		close(ch)
+	p2ps2 := generateNetworks(t, 3, false, nil, func(index int) []Option {
+		switch index {
+		case 0:
+			return []Option{WithBootstrap(bs1)}
+		case 1:
+			return []Option{WithBootstrap(bs2)}
+		case 2:
+			return []Option{WithBootstrap(bs3)}
+		}
+		return []Option{}
 	})
+	dht1 := p2ps2[0]
+	dht2 := p2ps2[1]
+	dht3 := p2ps2[2]
 
-	err = dht1.Start()
+	dht2.ConnectP2P(dht1)
+	dht3.ConnectP2P(dht1)
+
+	// dht3 provide cid `ns`
+	err = dht1.Provider(ns, true)
 	require.Nil(t, err)
-	err = dht2.Start()
+	time.Sleep(2 * time.Second)
+
+	// dht2 provide cid `ns`
+	err = dht2.Provider(ns, true)
 	require.Nil(t, err)
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 
-	err = dht1.AsyncSend(id2.String(), msg)
-	assert.Nil(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// dht3 provide cid `ns`
+	err = dht3.Provider(ns, true)
+	require.Nil(t, err)
+	time.Sleep(2 * time.Second)
 
-	select {
-	case <-ch:
-		return
-	case <-ctx.Done():
-		assert.Error(t, fmt.Errorf("timeout"))
-		return
+	findPeerC, err := dht1.FindProvidersAsync(ns, 0)
+	require.Nil(t, err)
+
+	done := make(chan struct{})
+
+	go allPeers(findPeerC, done)
+
+	<-done
+}
+
+func allPeers(peers <-chan peer.AddrInfo, done chan struct{}) {
+	for p := range peers {
+		log.Printf("peer #%s addrs #%s", p.ID, p.Addrs)
 	}
+	done <- struct{}{}
 }
 
-func generateNetwork(t *testing.T, port int) (Network, peer.AddrInfo) {
-	privKey, pubKey, err := crypto.GenerateECDSAKeyPair(rand.Reader)
-	assert.Nil(t, err)
+func TestP2P_IsConnected(t *testing.T) {
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
 
-	pid1, err := peer.IDFromPublicKey(pubKey)
-	assert.Nil(t, err)
-	addr := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)
-	maddr := fmt.Sprintf("%s/p2p/%s", addr, pid1)
-	certs, err := libp2pcert.LoadCerts(repo_path, node_cert_path, agency_cert_path, ca_cert_path)
-	assert.Nil(t, err)
-	tpt, err := libp2pcert.New(privKey, certs)
-	//tpt, err := libp2ptls.New(privKey)
-	assert.Nil(t, err)
-	p2p, err := New(
-		WithLocalAddr(addr),
-		WithPrivateKey(privKey),
-		WithProtocolIDs([]string{protocolID1, protocolID2}),
-		WithConnMgr(true, 10, 100, 20*time.Second),
-		WithTransport(tpt),
-		WithTransportId(libp2pcert.ID),
-	)
-
-	assert.Nil(t, err)
-
-	multiaddr, err := ma.NewMultiaddr(maddr)
-	require.Nil(t, err)
-	addrInfo, err := peer.AddrInfoFromP2pAddr(multiaddr)
-	require.Nil(t, err)
-
-	return p2p, *addrInfo
-}
-
-func generateBMNetwork(b *testing.B, port int) (Network, peer.AddrInfo) {
-	privKey, pubKey, err := crypto.GenerateECDSAKeyPair(rand.Reader)
-	assert.Nil(b, err)
-
-	pid1, err := peer.IDFromPublicKey(pubKey)
-	assert.Nil(b, err)
-	addr := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)
-	maddr := fmt.Sprintf("%s/p2p/%s", addr, pid1)
-	certs, err := libp2pcert.LoadCerts(repo_path, node_cert_path, agency_cert_path, ca_cert_path)
-	assert.Nil(b, err)
-	tpt, err := libp2pcert.New(privKey, certs)
-	//tpt, err := libp2ptls.New(privKey)
-	assert.Nil(b, err)
-	p2p, err := New(
-		WithLocalAddr(addr),
-		WithPrivateKey(privKey),
-		WithProtocolIDs([]string{protocolID1, protocolID2}),
-		WithConnMgr(true, 10, 100, 20*time.Second),
-		WithTransport(tpt),
-		WithTransportId(libp2pcert.ID),
-	)
-	assert.Nil(b, err)
-
-	multiaddr, err := ma.NewMultiaddr(maddr)
-	require.Nil(b, err)
-	addrInfo, err := peer.AddrInfoFromP2pAddr(multiaddr)
-	require.Nil(b, err)
-
-	return p2p, *addrInfo
-}
-
-func generateNetworkWithDHT(t *testing.T, port int, bootstrap []string) (Network, *peer.AddrInfo, peer.ID) {
-	privKey, pubKey, err := crypto.GenerateECDSAKeyPair(rand.Reader)
-	assert.Nil(t, err)
-
-	pid1, err := peer.IDFromPublicKey(pubKey)
-	assert.Nil(t, err)
-	addr := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)
-	maddr := fmt.Sprintf("%s/p2p/%s", addr, pid1)
-	certs, err := libp2pcert.LoadCerts(repo_path, node_cert_path, agency_cert_path, ca_cert_path)
-	assert.Nil(t, err)
-	tpt, err := libp2pcert.New(privKey, certs)
-	//tpt, err := libp2ptls.New(privKey)
-	assert.Nil(t, err)
-	p2p, err := New(
-		WithLocalAddr(addr),
-		WithPrivateKey(privKey),
-		WithBootstrap(bootstrap),
-		WithProtocolIDs([]string{protocolID1, protocolID2}),
-		WithConnMgr(true, 10, 100, 20*time.Second),
-		WithTransport(tpt),
-		WithTransportId(libp2pcert.ID),
-	)
-	assert.Nil(t, err)
-
-	multiaddr, err := ma.NewMultiaddr(maddr)
-	require.Nil(t, err)
-	addrInfo, err := peer.AddrInfoFromP2pAddr(multiaddr)
-	require.Nil(t, err)
-	return p2p, addrInfo, pid1
-}
-
-func BenchmarkSendWithStreamReusable(b *testing.B) {
-	p1, addr1 := generateBMNetwork(b, 6007)
-	p2, addr2 := generateBMNetwork(b, 6008)
-
-	err := p1.Start()
-	assert.Nil(b, err)
-	err = p2.Start()
-	assert.Nil(b, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(b, err)
-	err = p2.Connect(addr1)
-	assert.Nil(b, err)
-
-	msg := []byte("hello world")
-	ack := []byte("ack")
-	p2.SetMessageHandler(func(s Stream, data []byte) {
-		assert.Equal(b, msg, data)
-		err := s.AsyncSend(ack)
-		assert.Nil(b, err)
-		p2.ReleaseStream(s)
-	})
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rawMsg, err := p1.Send(p2.PeerID(), msg)
-		assert.Nil(b, err)
-		assert.Equal(b, ack, rawMsg)
-	}
-}
-
-func BenchmarkSendWithStreamNonReusable(b *testing.B) {
-	p1, addr1 := generateBMNetwork(b, 6007)
-	p2, addr2 := generateBMNetwork(b, 6008)
-
-	err := p1.Start()
-	assert.Nil(b, err)
-	err = p2.Start()
-	assert.Nil(b, err)
-
-	err = p1.Connect(addr2)
-	assert.Nil(b, err)
-	err = p2.Connect(addr1)
-	assert.Nil(b, err)
-
-	msg := []byte("hello world")
-	ack := []byte("ack")
-	p2.SetMessageHandler(func(s Stream, data []byte) {
-		assert.Equal(b, msg, data)
-		err := s.AsyncSend(ack)
-		assert.Nil(b, err)
-		p2.ReleaseStream(s)
-	})
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		s, err := p1.GetStream(p2.PeerID())
-		assert.Nil(b, err)
-		defer p1.ReleaseStream(s)
-		err = s.AsyncSend(msg)
-		assert.Nil(b, err)
-		rawMsg, err := s.Read(2 * time.Second)
-		assert.Nil(b, err)
-		assert.Equal(b, ack, rawMsg)
-	}
+	isConnected := p2.IsConnected(p1.PeerID())
+	assert.Equal(t, true, isConnected)
 }

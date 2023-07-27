@@ -2,15 +2,18 @@ package network
 
 import (
 	"context"
-	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"time"
 
-	"github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
-type ConnectCallback func(string) error
+type ConnectCallback func(net network.Network, conn network.Conn) error
+
+type DisconnectCallback func(peerID string)
 
 type MessageHandler func(Stream, []byte)
 
@@ -58,6 +61,9 @@ type Network interface {
 
 	// SetConnectionCallback sets the callback after connecting
 	SetConnectCallback(ConnectCallback)
+
+	// SetDisconnectCallback sets the callback after disconnecting
+	SetDisconnectCallback(DisconnectCallback)
 
 	// SetMessageHandler sets message handler
 	SetMessageHandler(MessageHandler)

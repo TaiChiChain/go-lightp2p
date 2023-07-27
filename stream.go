@@ -6,10 +6,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	ggio "github.com/gogo/protobuf/io"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/protocol"
-	network_pb "github.com/meshplus/go-lightp2p/pb"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -23,27 +21,23 @@ const (
 )
 
 type stream struct {
-	direction Direction
-	stream    network.Stream
-	pid       protocol.ID
-	valid   bool
+	stream      network.Stream
+	pid         protocol.ID
+	sendTimeout time.Duration
+	readTimeout time.Duration
 }
 
-func newStream(s network.Stream, pid protocol.ID, dir Direction) *stream {
+func newStream(s network.Stream, pid protocol.ID, sendTimeout time.Duration, readTimeout time.Duration) *stream {
 	return &stream{
-		direction: dir,
-		stream:    s,
-		pid:       pid,
-		valid:   true,
+		stream:      s,
+		pid:         pid,
+		sendTimeout: sendTimeout,
+		readTimeout: readTimeout,
 	}
 }
 
 func (s *stream) close() error {
 	return s.stream.Close()
-}
-
-func (s *stream) getDirection() Direction {
-	return s.direction
 }
 
 func (s *stream) getStream() network.Stream {
@@ -52,10 +46,6 @@ func (s *stream) getStream() network.Stream {
 
 func (s *stream) getProtocolID() protocol.ID {
 	return s.pid
-}
-
-func (s *stream) isValid() bool {
-	return s.valid
 }
 
 func (s *stream) reset() error {
@@ -71,17 +61,12 @@ func (s *stream) RemotePeerAddr() ma.Multiaddr {
 }
 
 func (s *stream) AsyncSend(msg []byte) error {
-	deadline := time.Now().Add(sendTimeout)
-
-	if err := s.getStream().SetWriteDeadline(deadline); err != nil {
-		s.valid = false
+	if err := s.getStream().SetWriteDeadline(time.Now().Add(s.sendTimeout)); err != nil {
 		return fmt.Errorf("set deadline: %w", err)
 	}
 
-	writer := ggio.NewDelimitedWriter(s.getStream())
-
-	if err := writer.WriteMsg(&network_pb.Message{Data: msg}); err != nil {
-		s.valid = false
+	writer := NewDelimitedWriter(s.getStream())
+	if err := writer.WriteMsg(msg); err != nil {
 		return fmt.Errorf("write msg: %w", err)
 	}
 
@@ -93,21 +78,19 @@ func (s *stream) Send(msg []byte) ([]byte, error) {
 		return nil, errors.Wrap(err, "failed on send msg")
 	}
 
-	recvMsg, err := waitMsg(s.getStream(), waitTimeout)
+	recvMsg, err := waitMsg(s.getStream(), s.readTimeout)
 	if err != nil {
-		s.valid = false
 		return nil, err
 	}
 
-	return recvMsg.Data, nil
+	return recvMsg, nil
 }
 
 func (s *stream) Read(timeout time.Duration) ([]byte, error) {
 	recvMsg, err := waitMsg(s.getStream(), timeout)
 	if err != nil {
-		s.valid = false
 		return nil, err
 	}
 
-	return recvMsg.Data, nil
+	return recvMsg, nil
 }

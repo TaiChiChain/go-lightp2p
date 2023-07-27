@@ -4,13 +4,18 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/libp2p/go-libp2p-core/connmgr"
-	"github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/protocol"
-	"github.com/libp2p/go-libp2p-core/sec"
-	"github.com/meshplus/bitxhub-kit/log"
+	"github.com/libp2p/go-libp2p/core/connmgr"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/sirupsen/logrus"
+)
+
+type SecurityType uint8
+
+const (
+	SecurityDisable SecurityType = 0
+	SecurityNoise   SecurityType = 1
+	SecurityTLS     SecurityType = 2
 )
 
 type connMgr struct {
@@ -21,29 +26,31 @@ type connMgr struct {
 }
 
 type Config struct {
-	localAddr   string
-	privKey     crypto.PrivKey
-	protocolIDs []protocol.ID
-	logger      logrus.FieldLogger
-	bootstrap   []string
-	connMgr     *connMgr
-	notify      network.Notifiee
-	gater       connmgr.ConnectionGater
-	transport   sec.SecureTransport
-	transportID string
+	localAddr            string
+	privKey              crypto.PrivKey
+	protocolID           protocol.ID
+	logger               logrus.FieldLogger
+	bootstrap            []string
+	connMgr              *connMgr
+	gater                connmgr.ConnectionGater
+	securityType         SecurityType
+	disableAutoBootstrap bool
+	connectTimeout       time.Duration
+	sendTimeout          time.Duration
+	readTimeout          time.Duration
 }
 
 type Option func(*Config)
 
-func WithTransportId(tid string) Option {
+func WithSecurity(t SecurityType) Option {
 	return func(config *Config) {
-		config.transportID = tid
+		config.securityType = t
 	}
 }
 
-func WithTransport(tpt sec.SecureTransport) Option {
+func WithDisableAutoBootstrap() Option {
 	return func(config *Config) {
-		config.transport = tpt
+		config.disableAutoBootstrap = true
 	}
 }
 
@@ -59,12 +66,9 @@ func WithLocalAddr(addr string) Option {
 	}
 }
 
-func WithProtocolIDs(ids []string) Option {
+func WithProtocolID(id string) Option {
 	return func(config *Config) {
-		config.protocolIDs = []protocol.ID{}
-		for _, id := range ids {
-			config.protocolIDs = append(config.protocolIDs, protocol.ID(id))
-		}
+		config.protocolID = protocol.ID(id)
 	}
 }
 
@@ -74,24 +78,18 @@ func WithBootstrap(peers []string) Option {
 	}
 }
 
-func WithNotify(notify network.Notifiee) Option {
-	return func(config *Config) {
-		config.notify = notify
-	}
-}
-
 func WithConnectionGater(gater connmgr.ConnectionGater) Option {
 	return func(config *Config) {
 		config.gater = gater
 	}
 }
 
-// * enable is the enable signal of the connection manager module.
-// * lo and hi are watermarks governing the number of connections that'll be maintained.
-//   When the peer count exceeds the 'high watermark', as many peers will be pruned (and
-//   their connections terminated) until 'low watermark' peers remain.
-// * grace is the amount of time a newly opened connection is given before it becomes
-//   subject to pruning.
+//   - enable is the enable signal of the connection manager module.
+//   - lo and hi are watermarks governing the number of connections that'll be maintained.
+//     When the peer count exceeds the 'high watermark', as many peers will be pruned (and
+//     their connections terminated) until 'low watermark' peers remain.
+//   - grace is the amount of time a newly opened connection is given before it becomes
+//     subject to pruning.
 func WithConnMgr(enable bool, lo int, hi int, grace time.Duration) Option {
 	return func(config *Config) {
 		config.connMgr = &connMgr{
@@ -103,6 +101,14 @@ func WithConnMgr(enable bool, lo int, hi int, grace time.Duration) Option {
 	}
 }
 
+func WithTimeout(connectTimeout, sendTimeout, readTimeout time.Duration) Option {
+	return func(config *Config) {
+		config.connectTimeout = connectTimeout
+		config.sendTimeout = sendTimeout
+		config.readTimeout = readTimeout
+	}
+}
+
 func WithLogger(logger logrus.FieldLogger) Option {
 	return func(config *Config) {
 		config.logger = logger
@@ -111,7 +117,7 @@ func WithLogger(logger logrus.FieldLogger) Option {
 
 func checkConfig(config *Config) error {
 	if config.logger == nil {
-		config.logger = log.NewWithModule("p2p")
+		config.logger = logrus.New()
 	}
 
 	if config.localAddr == "" {
@@ -122,7 +128,11 @@ func checkConfig(config *Config) error {
 }
 
 func generateConfig(opts ...Option) (*Config, error) {
-	conf := &Config{}
+	conf := &Config{
+		connectTimeout: 10 * time.Second,
+		sendTimeout:    5 * time.Second,
+		readTimeout:    5 * time.Second,
+	}
 	for _, opt := range opts {
 		opt(conf)
 	}
