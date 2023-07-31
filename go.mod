@@ -1,4 +1,4 @@
-module github.com/meshplus/go-lightp2p
+module github.com/axiomesh/axiom-p2p
 
 go 1.20
 
