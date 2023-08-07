@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-msgio"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/pkg/errors"
 )
 
 type Direction int
@@ -65,7 +65,7 @@ func (s *stream) AsyncSend(msg []byte) error {
 		return fmt.Errorf("set deadline: %w", err)
 	}
 
-	writer := NewDelimitedWriter(s.getStream())
+	writer := msgio.NewVarintWriter(s.getStream())
 	if err := writer.WriteMsg(msg); err != nil {
 		return fmt.Errorf("write msg: %w", err)
 	}

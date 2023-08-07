@@ -33,6 +33,11 @@ type MockP2P struct {
 	logger         logrus.FieldLogger
 }
 
+// CreatePipe implements Network.
+func (*MockP2P) CreatePipe(ctx context.Context, pipeID string) (Pipe, error) {
+	return nil, errors.New("create pipe not supported for mock p2p")
+}
+
 type mockMsg struct {
 	stream *mockStream
 	data   []byte

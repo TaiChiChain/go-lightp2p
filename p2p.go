@@ -12,6 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	connmgr "github.com/libp2p/go-libp2p/core/connmgr"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -19,6 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/routing"
+	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	connmgrimpl "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
@@ -61,6 +63,8 @@ type P2P struct {
 	router             routing.Routing
 	pingServer         *ping.PingService
 	ctx                context.Context
+
+	PipeManager
 }
 
 func New(ctx context.Context, options ...Option) (*P2P, error) {
@@ -69,10 +73,16 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		return nil, fmt.Errorf("generate config: %w", err)
 	}
 
+	// disable resource limit
+	rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(rcmgr.InfiniteLimits))
+	if err != nil {
+		return nil, err
+	}
 	opts := []libp2p.Option{
 		libp2p.Identity(conf.privKey),
 		libp2p.NoListenAddrs,
 		libp2p.ConnectionGater(conf.gater),
+		libp2p.ResourceManager(rm),
 	}
 
 	switch conf.securityType {
@@ -109,13 +119,36 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		return nil, errors.Wrap(err, "failed on create dht")
 	}
 
+	var ps *pubsub.PubSub
+	switch conf.pipeBroadcastType {
+	case PipeBroadcastSimple:
+	case PipeBroadcastGossip:
+		ps, err = pubsub.NewGossipSub(ctx, h)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed on create p2p gossip pubsub")
+		}
+	case PipeBroadcastFloodSub:
+		ps, err = pubsub.NewFloodSub(ctx, h)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed on create p2p flood pubsub")
+		}
+	default:
+		return nil, errors.Errorf("unsupported broadcast type: %v", conf.pipeBroadcastType)
+	}
+
+	pipeManager, err := NewPipeManager(ctx, h, ps, string(conf.protocolID), conf.logger, conf.pipeReceiveMsgCacheSize)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed on create p2p pipe manager")
+	}
+
 	p2p := &P2P{
-		config:     conf,
-		host:       h,
-		logger:     conf.logger,
-		router:     dynamicRouting,
-		pingServer: pingServer,
-		ctx:        ctx,
+		config:      conf,
+		host:        h,
+		logger:      conf.logger,
+		router:      dynamicRouting,
+		pingServer:  pingServer,
+		ctx:         ctx,
+		PipeManager: pipeManager,
 	}
 
 	return p2p, nil
