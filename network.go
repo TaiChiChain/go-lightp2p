@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -10,6 +11,22 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	ma "github.com/multiformats/go-multiaddr"
 )
+
+type PipeMsg struct {
+	From string
+	Data []byte
+}
+
+type Pipe interface {
+	fmt.Stringer
+	Send(ctx context.Context, to string, data []byte) error
+	Broadcast(ctx context.Context, targets []string, data []byte) error
+	Receive(ctx context.Context) *PipeMsg
+}
+
+type PipeManager interface {
+	CreatePipe(ctx context.Context, pipeID string) (Pipe, error)
+}
 
 type ConnectCallback func(net network.Network, conn network.Conn) error
 
@@ -46,6 +63,8 @@ type Network interface {
 	PeerHandler
 
 	DHTHandler
+
+	PipeManager
 
 	// Start start the network service.
 	Start() error

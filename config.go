@@ -13,9 +13,17 @@ import (
 type SecurityType uint8
 
 const (
-	SecurityDisable SecurityType = 0
-	SecurityNoise   SecurityType = 1
-	SecurityTLS     SecurityType = 2
+	SecurityDisable SecurityType = iota
+	SecurityNoise
+	SecurityTLS
+)
+
+type PipeBroadcastType uint8
+
+const (
+	PipeBroadcastSimple   PipeBroadcastType = iota
+	PipeBroadcastGossip   PipeBroadcastType = iota
+	PipeBroadcastFloodSub PipeBroadcastType = iota
 )
 
 type connMgr struct {
@@ -26,18 +34,20 @@ type connMgr struct {
 }
 
 type Config struct {
-	localAddr            string
-	privKey              crypto.PrivKey
-	protocolID           protocol.ID
-	logger               logrus.FieldLogger
-	bootstrap            []string
-	connMgr              *connMgr
-	gater                connmgr.ConnectionGater
-	securityType         SecurityType
-	disableAutoBootstrap bool
-	connectTimeout       time.Duration
-	sendTimeout          time.Duration
-	readTimeout          time.Duration
+	localAddr               string
+	privKey                 crypto.PrivKey
+	protocolID              protocol.ID
+	logger                  logrus.FieldLogger
+	bootstrap               []string
+	connMgr                 *connMgr
+	gater                   connmgr.ConnectionGater
+	securityType            SecurityType
+	pipeBroadcastType       PipeBroadcastType
+	pipeReceiveMsgCacheSize int
+	disableAutoBootstrap    bool
+	connectTimeout          time.Duration
+	sendTimeout             time.Duration
+	readTimeout             time.Duration
 }
 
 type Option func(*Config)
@@ -45,6 +55,18 @@ type Option func(*Config)
 func WithSecurity(t SecurityType) Option {
 	return func(config *Config) {
 		config.securityType = t
+	}
+}
+
+func WithPipeBroadcastType(t PipeBroadcastType) Option {
+	return func(config *Config) {
+		config.pipeBroadcastType = t
+	}
+}
+
+func WithPipeReceiveMsgCacheSize(s int) Option {
+	return func(config *Config) {
+		config.pipeReceiveMsgCacheSize = s
 	}
 }
 
@@ -129,9 +151,13 @@ func checkConfig(config *Config) error {
 
 func generateConfig(opts ...Option) (*Config, error) {
 	conf := &Config{
-		connectTimeout: 10 * time.Second,
-		sendTimeout:    5 * time.Second,
-		readTimeout:    5 * time.Second,
+		securityType:            SecurityTLS,
+		pipeBroadcastType:       PipeBroadcastSimple,
+		pipeReceiveMsgCacheSize: defaultPipeReceiveMsgCacheSize,
+		disableAutoBootstrap:    false,
+		connectTimeout:          10 * time.Second,
+		sendTimeout:             5 * time.Second,
+		readTimeout:             5 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(conf)

@@ -183,9 +183,11 @@ func TestP2P_MultiStreamSend(t *testing.T) {
 
 	send := func(wg *sync.WaitGroup) {
 		defer wg.Done()
-		resp, err := p1.Send(p2.PeerID(), msg)
-		assert.Nil(t, err)
-		assert.Equal(t, resp, ack)
+		for i := 0; i < 100; i++ {
+			resp, err := p1.Send(p2.PeerID(), msg)
+			assert.Nil(t, err)
+			assert.Equal(t, resp, ack)
+		}
 	}
 
 	for i := 0; i < testStreamNum; i++ {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-msgio"
 	"github.com/pkg/errors"
 )
 
@@ -13,7 +14,7 @@ func (p2p *P2P) handleMessage(s *stream) error {
 	if err := s.getStream().SetReadDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("set read deadline failed: %w", err)
 	}
-	reader := NewDelimitedReader(s.getStream(), network.MessageSizeMax)
+	reader := msgio.NewVarintReaderSize(s.getStream(), network.MessageSizeMax)
 	msg, err := reader.ReadMsg()
 	if err != nil {
 		if err != io.EOF {
@@ -49,7 +50,7 @@ func waitMsg(stream network.Stream, timeout time.Duration) ([]byte, error) {
 	if err := stream.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline failed: %w", err)
 	}
-	reader := NewDelimitedReader(stream, network.MessageSizeMax)
+	reader := msgio.NewVarintReaderSize(stream, network.MessageSizeMax)
 	return reader.ReadMsg()
 }
 
@@ -58,8 +59,7 @@ func (p2p *P2P) send(s *stream, msg []byte) error {
 		return fmt.Errorf("set write deadline failed: %w", err)
 	}
 
-	writer := NewDelimitedWriter(s.getStream())
-
+	writer := msgio.NewVarintWriter(s.getStream())
 	if err := writer.WriteMsg(msg); err != nil {
 		return fmt.Errorf("write msg: %w", err)
 	}
