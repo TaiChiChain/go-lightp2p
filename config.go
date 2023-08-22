@@ -48,6 +48,7 @@ type Config struct {
 	connectTimeout          time.Duration
 	sendTimeout             time.Duration
 	readTimeout             time.Duration
+	version                 string
 }
 
 type Option func(*Config)
@@ -168,4 +169,10 @@ func generateConfig(opts ...Option) (*Config, error) {
 	}
 
 	return conf, nil
+}
+
+func WithVersion(version string) Option {
+	return func(conf *Config) {
+		conf.version = version
+	}
 }

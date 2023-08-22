@@ -85,13 +85,14 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		libp2p.ResourceManager(rm),
 	}
 
+	securityId := conf.version
 	switch conf.securityType {
 	case SecurityDisable:
 		opts = append(opts, libp2p.NoSecurity)
 	case SecurityNoise:
-		opts = append(opts, libp2p.Security(libp2ptls.ID, noise.New))
+		opts = append(opts, libp2p.Security(securityId, noise.New))
 	case SecurityTLS:
-		opts = append(opts, libp2p.Security(libp2ptls.ID, libp2ptls.New))
+		opts = append(opts, libp2p.Security(securityId, libp2ptls.New))
 	}
 
 	if conf.connMgr != nil && conf.connMgr.enabled {
