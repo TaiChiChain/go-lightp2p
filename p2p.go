@@ -137,7 +137,7 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		return nil, errors.Errorf("unsupported broadcast type: %v", conf.pipeBroadcastType)
 	}
 
-	pipeManager, err := NewPipeManager(ctx, h, ps, string(conf.protocolID), conf.logger, conf.pipeReceiveMsgCacheSize)
+	pipeManager, err := NewPipeManager(ctx, h, ps, conf)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed on create p2p pipe manager")
 	}

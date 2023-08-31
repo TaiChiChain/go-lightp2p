@@ -43,12 +43,17 @@ type Config struct {
 	connMgr                 *connMgr
 	gater                   connmgr.ConnectionGater
 	securityType            SecurityType
-	pipeBroadcastType       PipeBroadcastType
-	pipeReceiveMsgCacheSize int
 	disableAutoBootstrap    bool
 	connectTimeout          time.Duration
 	sendTimeout             time.Duration
 	readTimeout             time.Duration
+	pipeBroadcastType       PipeBroadcastType
+	pipeReceiveMsgCacheSize int
+
+	pipeBroadcastWorkerCacheSize        int
+	pipeBroadcastWorkerConcurrencyLimit int
+	pipeBroadcastRetryNumber            int
+	pipeBroadcastRetryBaseTime          time.Duration
 }
 
 type Option func(*Config)
@@ -62,12 +67,6 @@ func WithSecurity(t SecurityType) Option {
 func WithPipeBroadcastType(t PipeBroadcastType) Option {
 	return func(config *Config) {
 		config.pipeBroadcastType = t
-	}
-}
-
-func WithPipeReceiveMsgCacheSize(s int) Option {
-	return func(config *Config) {
-		config.pipeReceiveMsgCacheSize = s
 	}
 }
 
@@ -138,6 +137,36 @@ func WithLogger(logger logrus.FieldLogger) Option {
 	}
 }
 
+func WithPipeReceiveMsgCacheSize(s int) Option {
+	return func(config *Config) {
+		config.pipeReceiveMsgCacheSize = s
+	}
+}
+
+func WithPipeBroadcastWorkerCacheSize(pipeBroadcastWorkerCacheSize int) Option {
+	return func(config *Config) {
+		config.pipeBroadcastWorkerCacheSize = pipeBroadcastWorkerCacheSize
+	}
+}
+
+func WithPipeBroadcastWorkerConcurrencyLimit(pipeBroadcastWorkerConcurrencyLimit int) Option {
+	return func(config *Config) {
+		config.pipeBroadcastWorkerConcurrencyLimit = pipeBroadcastWorkerConcurrencyLimit
+	}
+}
+
+func WithPipeBroadcastRetryNumber(pipeBroadcastRetryNumber int) Option {
+	return func(config *Config) {
+		config.pipeBroadcastRetryNumber = pipeBroadcastRetryNumber
+	}
+}
+
+func WithPipeBroadcastRetryBaseTime(pipeBroadcastRetryBaseTime time.Duration) Option {
+	return func(config *Config) {
+		config.pipeBroadcastRetryBaseTime = pipeBroadcastRetryBaseTime
+	}
+}
+
 func checkConfig(config *Config) error {
 	if config.logger == nil {
 		config.logger = logrus.New()
@@ -152,13 +181,17 @@ func checkConfig(config *Config) error {
 
 func generateConfig(opts ...Option) (*Config, error) {
 	conf := &Config{
-		securityType:            SecurityTLS,
-		pipeBroadcastType:       PipeBroadcastSimple,
-		pipeReceiveMsgCacheSize: defaultPipeReceiveMsgCacheSize,
-		disableAutoBootstrap:    false,
-		connectTimeout:          10 * time.Second,
-		sendTimeout:             5 * time.Second,
-		readTimeout:             5 * time.Second,
+		securityType:                        SecurityTLS,
+		disableAutoBootstrap:                false,
+		connectTimeout:                      10 * time.Second,
+		sendTimeout:                         5 * time.Second,
+		readTimeout:                         5 * time.Second,
+		pipeBroadcastType:                   PipeBroadcastSimple,
+		pipeReceiveMsgCacheSize:             defaultPipeReceiveMsgCacheSize,
+		pipeBroadcastWorkerCacheSize:        10000,
+		pipeBroadcastWorkerConcurrencyLimit: 20,
+		pipeBroadcastRetryNumber:            5,
+		pipeBroadcastRetryBaseTime:          100 * time.Millisecond,
 	}
 	for _, opt := range opts {
 		opt(conf)
