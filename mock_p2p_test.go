@@ -285,7 +285,6 @@ func TestMockP2P_ReleaseStream(t *testing.T) {
 func genTestMessages(size int) [][]byte {
 	msgList := make([][]byte, size)
 	for i := 1; i <= size; i++ {
-
 		msgList = append(msgList, []byte(strconv.Itoa(i)))
 	}
 	return msgList

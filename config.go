@@ -7,6 +7,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -143,7 +144,7 @@ func checkConfig(config *Config) error {
 	}
 
 	if config.localAddr == "" {
-		return fmt.Errorf("empty local address")
+		return errors.New("empty local address")
 	}
 
 	return nil

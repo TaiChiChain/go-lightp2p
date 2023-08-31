@@ -19,6 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	connmgrimpl "github.com/libp2p/go-libp2p/p2p/net/connmgr"
@@ -162,6 +163,10 @@ func newConnManager(cfg *connMgr) (connmgr.ConnManager, error) {
 	return connmgrimpl.NewConnManager(cfg.lo, cfg.hi, connmgrimpl.WithGracePeriod(cfg.grace))
 }
 
+func (p2p *P2P) baseProtocol() protocol.ID {
+	return protocol.ID(fmt.Sprintf("%s/base", p2p.config.protocolID))
+}
+
 func (p2p *P2P) Ping(ctx context.Context, peerID string) (<-chan ping.Result, error) {
 	peerInfo, err := p2p.FindPeer(peerID)
 	if err != nil {
@@ -174,7 +179,7 @@ func (p2p *P2P) Ping(ctx context.Context, peerID string) (<-chan ping.Result, er
 
 // Start start the network service.
 func (p2p *P2P) Start() error {
-	p2p.host.SetStreamHandler(p2p.config.protocolID, p2p.handleNewStream)
+	p2p.host.SetStreamHandler(p2p.baseProtocol(), p2p.handleNewStream)
 	p2p.host.Network().Notify(p2p)
 
 	a, err := ma.NewMultiaddr(p2p.config.localAddr)
@@ -454,7 +459,7 @@ func (p2p *P2P) ReleaseStream(s Stream) {
 		return
 	}
 
-	if stream.getProtocolID() == p2p.config.protocolID {
+	if stream.getProtocolID() == p2p.baseProtocol() {
 		if err := stream.close(); err != nil {
 			p2p.logger.WithField("err", err).Warn("Failed to release stream")
 		}
@@ -483,7 +488,7 @@ func (p2p *P2P) GetRemotePubKey(id peer.ID) (crypto.PubKey, error) {
 		return conn.RemotePublicKey(), nil
 	}
 
-	return nil, fmt.Errorf("get remote pub key: not found")
+	return nil, errors.New("get remote pub key: not found")
 }
 
 func (p2p *P2P) PeersNum() int {
@@ -553,23 +558,19 @@ func (p2p *P2P) newStream(peerID string) (*stream, error) {
 	}
 	ctx, cancel := context.WithTimeout(p2p.ctx, newStreamTimeout)
 	defer cancel()
-	s, err := p2p.host.NewStream(ctx, pid, p2p.config.protocolID)
+	s, err := p2p.host.NewStream(ctx, pid, p2p.baseProtocol())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed on create stream")
 	}
 
-	return newStream(s, p2p.config.protocolID, p2p.config.sendTimeout, p2p.config.readTimeout), nil
+	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout), nil
 }
 
 // called when network starts listening on an addr
-func (p2p *P2P) Listen(net network.Network, addr ma.Multiaddr) {
-
-}
+func (p2p *P2P) Listen(net network.Network, addr ma.Multiaddr) {}
 
 // called when network stops listening on an addr
-func (p2p *P2P) ListenClose(net network.Network, addr ma.Multiaddr) {
-
-}
+func (p2p *P2P) ListenClose(net network.Network, addr ma.Multiaddr) {}
 
 // called when a connection opened
 func (p2p *P2P) Connected(net network.Network, conn network.Conn) {
@@ -580,7 +581,6 @@ func (p2p *P2P) Connected(net network.Network, conn network.Conn) {
 			p2p.logger.WithFields(logrus.Fields{"error": err, "node": conn.RemotePeer().String()}).Error("Failed on node connected callback")
 		}
 	}
-
 }
 
 // called when a connection closed

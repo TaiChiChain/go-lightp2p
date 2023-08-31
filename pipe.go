@@ -98,13 +98,13 @@ func (p *PipeImpl) String() string {
 	return fmt.Sprintf("Pipe<%s>", p.fullProtocolID())
 }
 
-func (p *PipeImpl) fullProtocolID() string {
-	return fmt.Sprintf("%s/%s", p.protocolID, p.pipeID)
+func (p *PipeImpl) fullProtocolID() protocol.ID {
+	return protocol.ID(fmt.Sprintf("%s/pipe/%s", p.protocolID, p.pipeID))
 }
 
 func (p *PipeImpl) init() error {
 	// TODO: support restart after error
-	p.host.SetStreamHandler(protocol.ID(p.fullProtocolID()), func(s network.Stream) {
+	p.host.SetStreamHandler(p.fullProtocolID(), func(s network.Stream) {
 		remote := s.Conn().RemotePeer().String()
 		reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
 
@@ -119,7 +119,15 @@ func (p *PipeImpl) init() error {
 					"error": err,
 					"pipe":  p.fullProtocolID(),
 				}).Warn("Read msg failed")
-				continue
+
+				// release stream
+				if err := s.Close(); err != nil {
+					p.logger.WithFields(logrus.Fields{
+						"error": err,
+						"pipe":  p.fullProtocolID(),
+					}).Warn("Release stream failed")
+				}
+				return
 			}
 			select {
 			case <-p.ctx.Done():
@@ -140,7 +148,7 @@ func (p *PipeImpl) init() error {
 	})
 
 	if p.pubsub != nil {
-		topic, err := p.pubsub.Join(p.fullProtocolID())
+		topic, err := p.pubsub.Join(string(p.fullProtocolID()))
 		if err != nil {
 			return err
 		}
@@ -210,7 +218,7 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) error {
 
 func (p *PipeImpl) getStream(peerID peer.ID) (network.Stream, error) {
 	conns := p.host.Network().ConnsToPeer(peerID)
-	pid := protocol.ID(p.fullProtocolID())
+	pid := p.fullProtocolID()
 	if len(conns) > 0 {
 		for cidx := range conns {
 			streams := conns[cidx].GetStreams()
@@ -222,7 +230,6 @@ func (p *PipeImpl) getStream(peerID peer.ID) (network.Stream, error) {
 				}
 			}
 		}
-
 	}
 
 	return p.host.NewStream(p.ctx, peerID, pid)
