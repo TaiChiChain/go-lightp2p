@@ -16,21 +16,20 @@ type Direction int
 const (
 	// DirInbound is for when the remote peer initiated a stream.
 	DirInbound = iota
+
 	// DirOutbound is for when the local peer initiated a stream.
 	DirOutbound
 )
 
 type stream struct {
 	stream      network.Stream
-	pid         protocol.ID
 	sendTimeout time.Duration
 	readTimeout time.Duration
 }
 
-func newStream(s network.Stream, pid protocol.ID, sendTimeout time.Duration, readTimeout time.Duration) *stream {
+func newStream(s network.Stream, sendTimeout time.Duration, readTimeout time.Duration) *stream {
 	return &stream{
 		stream:      s,
-		pid:         pid,
 		sendTimeout: sendTimeout,
 		readTimeout: readTimeout,
 	}
@@ -45,7 +44,7 @@ func (s *stream) getStream() network.Stream {
 }
 
 func (s *stream) getProtocolID() protocol.ID {
-	return s.pid
+	return s.stream.Protocol()
 }
 
 func (s *stream) reset() error {

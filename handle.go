@@ -36,7 +36,7 @@ func (p2p *P2P) handleMessage(s *stream) error {
 }
 
 func (p2p *P2P) handleNewStream(s network.Stream) {
-	err := p2p.handleMessage(newStream(s, p2p.config.protocolID, p2p.config.sendTimeout, p2p.config.readTimeout))
+	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout))
 	if err != nil {
 		if err != io.EOF {
 			p2p.logger.WithField("error", err).Error("Handle message failed")

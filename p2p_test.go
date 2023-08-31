@@ -13,6 +13,7 @@ import (
 	ic "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -311,7 +312,7 @@ func TestP2P_AsyncSend(t *testing.T) {
 	case <-ch:
 		return
 	case <-ctx1.Done():
-		assert.Error(t, fmt.Errorf("timeout"))
+		assert.Error(t, errors.New("timeout"))
 		return
 	}
 }
@@ -428,7 +429,6 @@ func TestP2p_MultiSend(t *testing.T) {
 			err := p1.AsyncSend(p2.PeerID(), msg)
 			assert.Nil(t, err)
 		}
-
 	}()
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
@@ -438,7 +438,7 @@ func TestP2p_MultiSend(t *testing.T) {
 	case <-ch:
 		return
 	case <-ctx1.Done():
-		assert.Error(t, fmt.Errorf("timeout"))
+		assert.Error(t, errors.New("timeout"))
 	}
 }
 
@@ -555,7 +555,7 @@ func TestP2P_ConnMgr(t *testing.T) {
 	case <-ch:
 		return
 	case <-ctx1.Done():
-		assert.Error(t, fmt.Errorf("timeout"))
+		assert.Error(t, errors.New("timeout"))
 		return
 	}
 }
