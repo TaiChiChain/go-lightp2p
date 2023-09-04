@@ -6,6 +6,10 @@ import (
 	"io"
 	"sync"
 
+	"github.com/Rican7/retry"
+	"github.com/Rican7/retry/backoff"
+	"github.com/Rican7/retry/strategy"
+	"github.com/gammazero/workerpool"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -21,27 +25,23 @@ const (
 )
 
 type PipeManagerImpl struct {
-	ctx                     context.Context
-	host                    host.Host
-	pubsub                  *pubsub.PubSub
-	protocolID              string
-	logger                  logrus.FieldLogger
-	pipeReceiveMsgCacheSize int
+	ctx    context.Context
+	host   host.Host
+	pubsub *pubsub.PubSub
+	config *Config
 
 	lock  *sync.RWMutex
 	pipes map[string]*PipeImpl
 }
 
-func NewPipeManager(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, protocolID string, logger logrus.FieldLogger, pipeReceiveMsgCacheSize int) (PipeManager, error) {
+func NewPipeManager(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, config *Config) (PipeManager, error) {
 	return &PipeManagerImpl{
-		ctx:                     ctx,
-		host:                    host,
-		pubsub:                  pubsub,
-		protocolID:              protocolID,
-		logger:                  logger,
-		pipeReceiveMsgCacheSize: pipeReceiveMsgCacheSize,
-		lock:                    &sync.RWMutex{},
-		pipes:                   map[string]*PipeImpl{},
+		ctx:    ctx,
+		host:   host,
+		pubsub: pubsub,
+		config: config,
+		lock:   &sync.RWMutex{},
+		pipes:  map[string]*PipeImpl{},
 	}, nil
 }
 
@@ -52,7 +52,7 @@ func (m *PipeManagerImpl) CreatePipe(ctx context.Context, pipeID string) (Pipe, 
 		return nil, errors.Errorf("pipe[%s] alerady exists", pipeID)
 	}
 
-	p, err := newPipe(ctx, m.host, m.pubsub, m.protocolID, m.logger, pipeID, m.pipeReceiveMsgCacheSize)
+	p, err := newPipe(ctx, m.host, m.pubsub, m.config, pipeID)
 	if err != nil {
 		return nil, err
 	}
@@ -64,33 +64,30 @@ func (m *PipeManagerImpl) CreatePipe(ctx context.Context, pipeID string) (Pipe, 
 	return p, nil
 }
 
-type PipeImpl struct {
-	ctx        context.Context
-	host       host.Host
-	pubsub     *pubsub.PubSub
-	protocolID string
-	logger     logrus.FieldLogger
-	pipeID     string
-	selfPeerID string
+type pipeBroadcastWorker func()
 
-	topic *pubsub.Topic
-	msgCh chan PipeMsg
+type PipeImpl struct {
+	ctx               context.Context
+	host              host.Host
+	pubsub            *pubsub.PubSub
+	config            *Config
+	pipeID            string
+	selfPeerID        string
+	topic             *pubsub.Topic
+	msgCh             chan PipeMsg
+	broadcastWorkerCh chan pipeBroadcastWorker
 }
 
-func newPipe(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, protocolID string, logger logrus.FieldLogger, pipeID string, pipeReceiveMsgCacheSize int) (*PipeImpl, error) {
-	if pipeReceiveMsgCacheSize < 0 {
-		pipeReceiveMsgCacheSize = defaultPipeReceiveMsgCacheSize
-	}
-
+func newPipe(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, config *Config, pipeID string) (*PipeImpl, error) {
 	return &PipeImpl{
-		ctx:        ctx,
-		host:       host,
-		pubsub:     pubsub,
-		protocolID: protocolID,
-		logger:     logger,
-		pipeID:     pipeID,
-		selfPeerID: host.ID().String(),
-		msgCh:      make(chan PipeMsg, pipeReceiveMsgCacheSize),
+		ctx:               ctx,
+		host:              host,
+		pubsub:            pubsub,
+		config:            config,
+		pipeID:            pipeID,
+		selfPeerID:        host.ID().String(),
+		msgCh:             make(chan PipeMsg, config.pipeReceiveMsgCacheSize),
+		broadcastWorkerCh: make(chan pipeBroadcastWorker, config.pipeBroadcastWorkerCacheSize),
 	}, nil
 }
 
@@ -99,11 +96,10 @@ func (p *PipeImpl) String() string {
 }
 
 func (p *PipeImpl) fullProtocolID() protocol.ID {
-	return protocol.ID(fmt.Sprintf("%s/pipe/%s", p.protocolID, p.pipeID))
+	return protocol.ID(fmt.Sprintf("%s/pipe/%s", p.config.protocolID, p.pipeID))
 }
 
 func (p *PipeImpl) init() error {
-	// TODO: support restart after error
 	p.host.SetStreamHandler(p.fullProtocolID(), func(s network.Stream) {
 		remote := s.Conn().RemotePeer().String()
 		reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
@@ -115,14 +111,14 @@ func (p *PipeImpl) init() error {
 					return
 				}
 
-				p.logger.WithFields(logrus.Fields{
+				p.config.logger.WithFields(logrus.Fields{
 					"error": err,
 					"pipe":  p.fullProtocolID(),
 				}).Warn("Read msg failed")
 
 				// release stream
 				if err := s.Close(); err != nil {
-					p.logger.WithFields(logrus.Fields{
+					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
 						"pipe":  p.fullProtocolID(),
 					}).Warn("Release stream failed")
@@ -132,7 +128,7 @@ func (p *PipeImpl) init() error {
 			select {
 			case <-p.ctx.Done():
 				if err := s.Close(); err != nil {
-					p.logger.WithFields(logrus.Fields{
+					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
 						"pipe":  p.fullProtocolID(),
 					}).Warn("Release stream failed")
@@ -148,6 +144,7 @@ func (p *PipeImpl) init() error {
 	})
 
 	if p.pubsub != nil {
+		// TODO: support restart after error
 		topic, err := p.pubsub.Join(string(p.fullProtocolID()))
 		if err != nil {
 			return err
@@ -166,7 +163,7 @@ func (p *PipeImpl) init() error {
 						return
 					}
 
-					p.logger.WithFields(logrus.Fields{
+					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
 						"pipe":  p.fullProtocolID(),
 					}).Warn("Read msg from pubsub failed")
@@ -190,7 +187,21 @@ func (p *PipeImpl) init() error {
 		}()
 	}
 
+	go p.processBroadcastWorkers()
 	return nil
+}
+
+func (p *PipeImpl) processBroadcastWorkers() {
+	wp := workerpool.New(p.config.pipeBroadcastWorkerConcurrencyLimit)
+	for {
+		select {
+		case <-p.ctx.Done():
+			wp.StopWait()
+			return
+		case worker := <-p.broadcastWorkerCh:
+			wp.Submit(worker)
+		}
+	}
 }
 
 func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) error {
@@ -239,19 +250,37 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 	if p.pubsub != nil {
 		return p.topic.Publish(ctx, data)
 	}
-	for _, id := range targets {
-		if id == p.host.ID().String() {
-			continue
-		}
-		go func(id string) {
-			if err := p.Send(ctx, id, data); err != nil {
-				p.logger.WithFields(logrus.Fields{
-					"error": err,
-					"id":    id,
-				}).Error("Broadcast message failed")
+
+	worker := func() {
+		wg := &sync.WaitGroup{}
+		for _, id := range targets {
+			if id == p.selfPeerID {
+				continue
 			}
-		}(id)
+
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+
+				err := retry.Retry(func(attempt uint) error {
+					return p.Send(ctx, id, data)
+				}, strategy.Backoff(backoff.BinaryExponential(p.config.pipeBroadcastRetryBaseTime)), strategy.Limit(uint(p.config.pipeBroadcastRetryNumber)))
+				if err != nil {
+					p.config.logger.WithFields(logrus.Fields{
+						"error": err,
+						"id":    id,
+					}).Error("Broadcast message failed")
+				}
+			}(id)
+		}
+		wg.Wait()
 	}
+	select {
+	case <-ctx.Done():
+	case <-p.ctx.Done():
+	case p.broadcastWorkerCh <- worker:
+	}
+
 	return nil
 }
 
