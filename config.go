@@ -22,9 +22,8 @@ const (
 type PipeBroadcastType uint8
 
 const (
-	PipeBroadcastSimple   PipeBroadcastType = iota
-	PipeBroadcastGossip   PipeBroadcastType = iota
-	PipeBroadcastFloodSub PipeBroadcastType = iota
+	PipeBroadcastSimple PipeBroadcastType = iota
+	PipeBroadcastGossip PipeBroadcastType = iota
 )
 
 type connMgr struct {
@@ -34,41 +33,53 @@ type connMgr struct {
 	grace   time.Duration
 }
 
-type Config struct {
-	localAddr               string
-	privKey                 crypto.PrivKey
-	protocolID              protocol.ID
-	logger                  logrus.FieldLogger
-	bootstrap               []string
-	connMgr                 *connMgr
-	gater                   connmgr.ConnectionGater
-	securityType            SecurityType
-	disableAutoBootstrap    bool
-	connectTimeout          time.Duration
-	sendTimeout             time.Duration
-	readTimeout             time.Duration
-	pipeBroadcastType       PipeBroadcastType
-	pipeReceiveMsgCacheSize int
-
-	// pipeGossipSubBufferSize is the size of subscribe output buffer in go-libp2p-pubsub
+type PipeGossipsubConfig struct {
+	// SubBufferSize is the size of subscribe output buffer in go-libp2p-pubsub
 	// we should have enough capacity of the queue
 	// because when queue is full, if the consumer does not read fast enough, new messages are dropped
-	pipeGossipSubBufferSize int
+	SubBufferSize int
 
-	// pipeGossipPeerOutboundBufferSize is the size of outbound messages to a peer buffers in go-libp2p-pubsub
+	// PeerOutboundBufferSize is the size of outbound messages to a peer buffers in go-libp2p-pubsub
 	// we should have enough capacity of the queue
 	// because we start dropping messages to a peer if the outbound queue is full
-	pipeGossipPeerOutboundBufferSize int
+	PeerOutboundBufferSize int
 
-	// pipeGossipValidateBufferSize is the size of validate buffers in go-libp2p-pubsub
+	// ValidateBufferSize is the size of validate buffers in go-libp2p-pubsub
 	// we should have enough capacity of the queue
 	// because when queue is full, validation is throttled and new messages are dropped.
-	pipeGossipValidateBufferSize int
+	ValidateBufferSize int
 
-	pipeBroadcastWorkerCacheSize        int
-	pipeBroadcastWorkerConcurrencyLimit int
-	pipeBroadcastRetryNumber            int
-	pipeBroadcastRetryBaseTime          time.Duration
+	SeenMessagesTTL time.Duration
+}
+
+type PipeSimpleConfig struct {
+	WorkerCacheSize        int
+	WorkerConcurrencyLimit int
+	RetryNumber            int
+	RetryBaseTime          time.Duration
+}
+
+type PipeConfig struct {
+	BroadcastType       PipeBroadcastType
+	ReceiveMsgCacheSize int
+	SimpleBroadcast     PipeSimpleConfig
+	Gossipsub           PipeGossipsubConfig
+}
+
+type Config struct {
+	localAddr            string
+	privKey              crypto.PrivKey
+	protocolID           protocol.ID
+	logger               logrus.FieldLogger
+	bootstrap            []string
+	connMgr              *connMgr
+	gater                connmgr.ConnectionGater
+	securityType         SecurityType
+	disableAutoBootstrap bool
+	connectTimeout       time.Duration
+	sendTimeout          time.Duration
+	readTimeout          time.Duration
+	pipe                 PipeConfig
 }
 
 type Option func(*Config)
@@ -76,12 +87,6 @@ type Option func(*Config)
 func WithSecurity(t SecurityType) Option {
 	return func(config *Config) {
 		config.securityType = t
-	}
-}
-
-func WithPipeBroadcastType(t PipeBroadcastType) Option {
-	return func(config *Config) {
-		config.pipeBroadcastType = t
 	}
 }
 
@@ -152,51 +157,9 @@ func WithLogger(logger logrus.FieldLogger) Option {
 	}
 }
 
-func WithPipeReceiveMsgCacheSize(s int) Option {
+func WithPipe(t PipeConfig) Option {
 	return func(config *Config) {
-		config.pipeReceiveMsgCacheSize = s
-	}
-}
-
-func WithPipeBroadcastWorkerCacheSize(pipeBroadcastWorkerCacheSize int) Option {
-	return func(config *Config) {
-		config.pipeBroadcastWorkerCacheSize = pipeBroadcastWorkerCacheSize
-	}
-}
-
-func WithPipeBroadcastWorkerConcurrencyLimit(pipeBroadcastWorkerConcurrencyLimit int) Option {
-	return func(config *Config) {
-		config.pipeBroadcastWorkerConcurrencyLimit = pipeBroadcastWorkerConcurrencyLimit
-	}
-}
-
-func WithPipeBroadcastRetryNumber(pipeBroadcastRetryNumber int) Option {
-	return func(config *Config) {
-		config.pipeBroadcastRetryNumber = pipeBroadcastRetryNumber
-	}
-}
-
-func WithPipeBroadcastRetryBaseTime(pipeBroadcastRetryBaseTime time.Duration) Option {
-	return func(config *Config) {
-		config.pipeBroadcastRetryBaseTime = pipeBroadcastRetryBaseTime
-	}
-}
-
-func WithPipeGossipSubBufferSize(pipeGossipSubBufferSize int) Option {
-	return func(config *Config) {
-		config.pipeGossipSubBufferSize = pipeGossipSubBufferSize
-	}
-}
-
-func WithPipeGossipPeerOutboundBufferSize(pipeGossipPeerOutboundBufferSize int) Option {
-	return func(config *Config) {
-		config.pipeGossipPeerOutboundBufferSize = pipeGossipPeerOutboundBufferSize
-	}
-}
-
-func WithPipeGossipValidateBufferSize(pipeGossipValidateBufferSize int) Option {
-	return func(config *Config) {
-		config.pipeGossipValidateBufferSize = pipeGossipValidateBufferSize
+		config.pipe = t
 	}
 }
 
@@ -214,20 +177,27 @@ func checkConfig(config *Config) error {
 
 func generateConfig(opts ...Option) (*Config, error) {
 	conf := &Config{
-		securityType:                        SecurityTLS,
-		disableAutoBootstrap:                false,
-		connectTimeout:                      10 * time.Second,
-		sendTimeout:                         5 * time.Second,
-		readTimeout:                         5 * time.Second,
-		pipeBroadcastType:                   PipeBroadcastSimple,
-		pipeReceiveMsgCacheSize:             1024,
-		pipeGossipSubBufferSize:             1024,
-		pipeGossipPeerOutboundBufferSize:    1024,
-		pipeGossipValidateBufferSize:        1024,
-		pipeBroadcastWorkerCacheSize:        10000,
-		pipeBroadcastWorkerConcurrencyLimit: 20,
-		pipeBroadcastRetryNumber:            5,
-		pipeBroadcastRetryBaseTime:          100 * time.Millisecond,
+		securityType:         SecurityTLS,
+		disableAutoBootstrap: false,
+		connectTimeout:       10 * time.Second,
+		sendTimeout:          5 * time.Second,
+		readTimeout:          5 * time.Second,
+		pipe: PipeConfig{
+			BroadcastType:       PipeBroadcastSimple,
+			ReceiveMsgCacheSize: 1024,
+			SimpleBroadcast: PipeSimpleConfig{
+				WorkerCacheSize:        1024,
+				WorkerConcurrencyLimit: 20,
+				RetryNumber:            5,
+				RetryBaseTime:          100 * time.Millisecond,
+			},
+			Gossipsub: PipeGossipsubConfig{
+				SubBufferSize:          1024,
+				PeerOutboundBufferSize: 1024,
+				ValidateBufferSize:     1024,
+				SeenMessagesTTL:        120 * time.Second,
+			},
+		},
 	}
 	for _, opt := range opts {
 		opt(conf)

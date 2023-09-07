@@ -122,35 +122,25 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 	}
 
 	var ps *pubsub.PubSub
-	switch conf.pipeBroadcastType {
+	switch conf.pipe.BroadcastType {
 	case PipeBroadcastSimple:
 	case PipeBroadcastGossip:
 		ps, err = pubsub.NewGossipSub(ctx, h,
 			pubsub.WithDiscovery(discoveryrouting.NewRoutingDiscovery(dynamicRouting)),
-			pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
-				ps: h.Peerstore(),
-			})),
-			pubsub.WithPeerOutboundQueueSize(conf.pipeGossipPeerOutboundBufferSize),
-			pubsub.WithValidateQueueSize(conf.pipeGossipValidateBufferSize),
+			// pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
+			//	ps: h.Peerstore(),
+			// })),
+			pubsub.WithPeerOutboundQueueSize(conf.pipe.Gossipsub.PeerOutboundBufferSize),
+			pubsub.WithValidateQueueSize(conf.pipe.Gossipsub.ValidateBufferSize),
+			pubsub.WithSeenMessagesTTL(conf.pipe.Gossipsub.SeenMessagesTTL),
+			pubsub.WithMaxMessageSize(4<<20),
+			pubsub.WithMessageIdFn(messageIdFn),
 		)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed on create p2p gossip pubsub")
 		}
-	case PipeBroadcastFloodSub:
-		ps, err = pubsub.NewFloodSub(ctx, h,
-			pubsub.WithDiscovery(discoveryrouting.NewRoutingDiscovery(dynamicRouting)),
-			pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
-				ps: h.Peerstore(),
-			})),
-			pubsub.WithPeerOutboundQueueSize(conf.pipeGossipPeerOutboundBufferSize),
-			pubsub.WithValidateQueueSize(conf.pipeGossipValidateBufferSize),
-		)
-
-		if err != nil {
-			return nil, errors.Wrap(err, "failed on create p2p flood pubsub")
-		}
 	default:
-		return nil, errors.Errorf("unsupported broadcast type: %v", conf.pipeBroadcastType)
+		return nil, errors.Errorf("unsupported broadcast type: %v", conf.pipe.BroadcastType)
 	}
 
 	pipeManager, err := NewPipeManager(ctx, h, ps, conf)

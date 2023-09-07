@@ -11,7 +11,22 @@ import (
 
 func testPipe(t *testing.T, typ PipeBroadcastType) {
 	p2ps := generateNetworks(t, 3, true, []Option{
-		WithPipeBroadcastType(typ),
+		WithPipe(PipeConfig{
+			BroadcastType:       typ,
+			ReceiveMsgCacheSize: 1024,
+			SimpleBroadcast: PipeSimpleConfig{
+				WorkerCacheSize:        1024,
+				WorkerConcurrencyLimit: 20,
+				RetryNumber:            5,
+				RetryBaseTime:          100 * time.Millisecond,
+			},
+			Gossipsub: PipeGossipsubConfig{
+				SubBufferSize:          1024,
+				PeerOutboundBufferSize: 1024,
+				ValidateBufferSize:     1024,
+				SeenMessagesTTL:        120 * time.Second,
+			},
+		}),
 	}, nil)
 
 	ctx := context.Background()
@@ -121,8 +136,4 @@ func TestPipe_simple(t *testing.T) {
 
 func TestPipe_gossip(t *testing.T) {
 	testPipe(t, PipeBroadcastGossip)
-}
-
-func TestPipe_flood(t *testing.T) {
-	testPipe(t, PipeBroadcastFloodSub)
 }
