@@ -21,6 +21,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
+	discoveryrouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	connmgrimpl "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
@@ -124,12 +125,27 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 	switch conf.pipeBroadcastType {
 	case PipeBroadcastSimple:
 	case PipeBroadcastGossip:
-		ps, err = pubsub.NewGossipSub(ctx, h)
+		ps, err = pubsub.NewGossipSub(ctx, h,
+			pubsub.WithDiscovery(discoveryrouting.NewRoutingDiscovery(dynamicRouting)),
+			pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
+				ps: h.Peerstore(),
+			})),
+			pubsub.WithPeerOutboundQueueSize(conf.pipeGossipPeerOutboundBufferSize),
+			pubsub.WithValidateQueueSize(conf.pipeGossipValidateBufferSize),
+		)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed on create p2p gossip pubsub")
 		}
 	case PipeBroadcastFloodSub:
-		ps, err = pubsub.NewFloodSub(ctx, h)
+		ps, err = pubsub.NewFloodSub(ctx, h,
+			pubsub.WithDiscovery(discoveryrouting.NewRoutingDiscovery(dynamicRouting)),
+			pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
+				ps: h.Peerstore(),
+			})),
+			pubsub.WithPeerOutboundQueueSize(conf.pipeGossipPeerOutboundBufferSize),
+			pubsub.WithValidateQueueSize(conf.pipeGossipValidateBufferSize),
+		)
+
 		if err != nil {
 			return nil, errors.Wrap(err, "failed on create p2p flood pubsub")
 		}
