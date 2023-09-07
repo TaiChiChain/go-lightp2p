@@ -50,6 +50,21 @@ type Config struct {
 	pipeBroadcastType       PipeBroadcastType
 	pipeReceiveMsgCacheSize int
 
+	// pipeGossipSubBufferSize is the size of subscribe output buffer in go-libp2p-pubsub
+	// we should have enough capacity of the queue
+	// because when queue is full, if the consumer does not read fast enough, new messages are dropped
+	pipeGossipSubBufferSize int
+
+	// pipeGossipPeerOutboundBufferSize is the size of outbound messages to a peer buffers in go-libp2p-pubsub
+	// we should have enough capacity of the queue
+	// because we start dropping messages to a peer if the outbound queue is full
+	pipeGossipPeerOutboundBufferSize int
+
+	// pipeGossipValidateBufferSize is the size of validate buffers in go-libp2p-pubsub
+	// we should have enough capacity of the queue
+	// because when queue is full, validation is throttled and new messages are dropped.
+	pipeGossipValidateBufferSize int
+
 	pipeBroadcastWorkerCacheSize        int
 	pipeBroadcastWorkerConcurrencyLimit int
 	pipeBroadcastRetryNumber            int
@@ -167,6 +182,24 @@ func WithPipeBroadcastRetryBaseTime(pipeBroadcastRetryBaseTime time.Duration) Op
 	}
 }
 
+func WithPipeGossipSubBufferSize(pipeGossipSubBufferSize int) Option {
+	return func(config *Config) {
+		config.pipeGossipSubBufferSize = pipeGossipSubBufferSize
+	}
+}
+
+func WithPipeGossipPeerOutboundBufferSize(pipeGossipPeerOutboundBufferSize int) Option {
+	return func(config *Config) {
+		config.pipeGossipPeerOutboundBufferSize = pipeGossipPeerOutboundBufferSize
+	}
+}
+
+func WithPipeGossipValidateBufferSize(pipeGossipValidateBufferSize int) Option {
+	return func(config *Config) {
+		config.pipeGossipValidateBufferSize = pipeGossipValidateBufferSize
+	}
+}
+
 func checkConfig(config *Config) error {
 	if config.logger == nil {
 		config.logger = logrus.New()
@@ -187,7 +220,10 @@ func generateConfig(opts ...Option) (*Config, error) {
 		sendTimeout:                         5 * time.Second,
 		readTimeout:                         5 * time.Second,
 		pipeBroadcastType:                   PipeBroadcastSimple,
-		pipeReceiveMsgCacheSize:             defaultPipeReceiveMsgCacheSize,
+		pipeReceiveMsgCacheSize:             1024,
+		pipeGossipSubBufferSize:             1024,
+		pipeGossipPeerOutboundBufferSize:    1024,
+		pipeGossipValidateBufferSize:        1024,
 		pipeBroadcastWorkerCacheSize:        10000,
 		pipeBroadcastWorkerConcurrencyLimit: 20,
 		pipeBroadcastRetryNumber:            5,

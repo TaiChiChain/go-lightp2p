@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-msgio"
 	"github.com/pkg/errors"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	defaultPipeReceiveMsgCacheSize = 100
+	seqnoValidatorPeerMetadataStoreKey = "gossip_validator_seqno"
 )
 
 type PipeManagerImpl struct {
@@ -144,14 +145,13 @@ func (p *PipeImpl) init() error {
 	})
 
 	if p.pubsub != nil {
-		// TODO: support restart after error
 		topic, err := p.pubsub.Join(string(p.fullProtocolID()))
 		if err != nil {
 			return err
 		}
 		p.topic = topic
 
-		sub, err := topic.Subscribe()
+		sub, err := topic.Subscribe(pubsub.WithBufferSize(p.config.pipeGossipSubBufferSize))
 		if err != nil {
 			return err
 		}
@@ -293,4 +293,26 @@ func (p *PipeImpl) Receive(ctx context.Context) *PipeMsg {
 	case msg := <-p.msgCh:
 		return &msg
 	}
+}
+
+type SeqnoValidatorPeerMetadataStoreAdaptor struct {
+	ps peerstore.Peerstore
+}
+
+func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Get(ctx context.Context, p peer.ID) ([]byte, error) {
+	res, err := a.ps.Get(p, seqnoValidatorPeerMetadataStoreKey)
+	if err != nil {
+		if errors.Is(err, peerstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	return res.([]byte), nil
+}
+
+func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Put(ctx context.Context, p peer.ID, v []byte) error {
+	return a.ps.Put(p, seqnoValidatorPeerMetadataStoreKey, v)
 }
