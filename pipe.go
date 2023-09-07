@@ -11,6 +11,7 @@ import (
 	"github.com/Rican7/retry/strategy"
 	"github.com/gammazero/workerpool"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -19,6 +20,7 @@ import (
 	"github.com/libp2p/go-msgio"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -75,6 +77,7 @@ type PipeImpl struct {
 	pipeID            string
 	selfPeerID        string
 	topic             *pubsub.Topic
+	cancelRelay       pubsub.RelayCancelFunc
 	msgCh             chan PipeMsg
 	broadcastWorkerCh chan pipeBroadcastWorker
 }
@@ -87,8 +90,8 @@ func newPipe(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, config 
 		config:            config,
 		pipeID:            pipeID,
 		selfPeerID:        host.ID().String(),
-		msgCh:             make(chan PipeMsg, config.pipeReceiveMsgCacheSize),
-		broadcastWorkerCh: make(chan pipeBroadcastWorker, config.pipeBroadcastWorkerCacheSize),
+		msgCh:             make(chan PipeMsg, config.pipe.ReceiveMsgCacheSize),
+		broadcastWorkerCh: make(chan pipeBroadcastWorker, config.pipe.SimpleBroadcast.WorkerCacheSize),
 	}, nil
 }
 
@@ -150,8 +153,12 @@ func (p *PipeImpl) init() error {
 			return err
 		}
 		p.topic = topic
+		if p.cancelRelay, err = p.topic.Relay(); err != nil {
+			_ = topic.Close()
+			return fmt.Errorf("p2p: failed to relay topic '%s': %w", string(p.fullProtocolID()), err)
+		}
 
-		sub, err := topic.Subscribe(pubsub.WithBufferSize(p.config.pipeGossipSubBufferSize))
+		sub, err := topic.Subscribe(pubsub.WithBufferSize(p.config.pipe.Gossipsub.SubBufferSize))
 		if err != nil {
 			return err
 		}
@@ -192,7 +199,7 @@ func (p *PipeImpl) init() error {
 }
 
 func (p *PipeImpl) processBroadcastWorkers() {
-	wp := workerpool.New(p.config.pipeBroadcastWorkerConcurrencyLimit)
+	wp := workerpool.New(p.config.pipe.SimpleBroadcast.WorkerConcurrencyLimit)
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -264,7 +271,7 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 
 				err := retry.Retry(func(attempt uint) error {
 					return p.Send(ctx, id, data)
-				}, strategy.Backoff(backoff.BinaryExponential(p.config.pipeBroadcastRetryBaseTime)), strategy.Limit(uint(p.config.pipeBroadcastRetryNumber)))
+				}, strategy.Backoff(backoff.BinaryExponential(p.config.pipe.SimpleBroadcast.RetryBaseTime)), strategy.Limit(uint(p.config.pipe.SimpleBroadcast.RetryNumber)))
 				if err != nil {
 					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
@@ -315,4 +322,11 @@ func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Get(ctx context.Context, p peer
 
 func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Put(ctx context.Context, p peer.ID, v []byte) error {
 	return a.ps.Put(p, seqnoValidatorPeerMetadataStoreKey, v)
+}
+
+func messageIdFn(pmsg *pb.Message) string { // nolint: revive
+	h := sha3.New256()
+	_, _ = h.Write([]byte(pmsg.GetTopic()))
+	_, _ = h.Write(pmsg.Data)
+	return string(h.Sum(nil))
 }
