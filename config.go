@@ -34,6 +34,8 @@ type connMgr struct {
 }
 
 type PipeGossipsubConfig struct {
+	UseCustomMsgIDFunc bool
+
 	// SubBufferSize is the size of subscribe output buffer in go-libp2p-pubsub
 	// we should have enough capacity of the queue
 	// because when queue is full, if the consumer does not read fast enough, new messages are dropped
@@ -192,6 +194,7 @@ func generateConfig(opts ...Option) (*Config, error) {
 				RetryBaseTime:          100 * time.Millisecond,
 			},
 			Gossipsub: PipeGossipsubConfig{
+				UseCustomMsgIDFunc:     false,
 				SubBufferSize:          1024,
 				PeerOutboundBufferSize: 1024,
 				ValidateBufferSize:     1024,

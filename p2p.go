@@ -125,17 +125,17 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 	switch conf.pipe.BroadcastType {
 	case PipeBroadcastSimple:
 	case PipeBroadcastGossip:
-		ps, err = pubsub.NewGossipSub(ctx, h,
+		opts := []pubsub.Option{
 			pubsub.WithDiscovery(discoveryrouting.NewRoutingDiscovery(dynamicRouting)),
-			// pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
-			//	ps: h.Peerstore(),
-			// })),
 			pubsub.WithPeerOutboundQueueSize(conf.pipe.Gossipsub.PeerOutboundBufferSize),
 			pubsub.WithValidateQueueSize(conf.pipe.Gossipsub.ValidateBufferSize),
 			pubsub.WithSeenMessagesTTL(conf.pipe.Gossipsub.SeenMessagesTTL),
-			pubsub.WithMaxMessageSize(4<<20),
-			pubsub.WithMessageIdFn(messageIdFn),
-		)
+			pubsub.WithMaxMessageSize(4 << 20),
+		}
+		if conf.pipe.Gossipsub.UseCustomMsgIDFunc {
+			opts = append(opts, pubsub.WithMessageIdFn(messageIdFn))
+		}
+		ps, err = pubsub.NewGossipSub(ctx, h, opts...)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed on create p2p gossip pubsub")
 		}

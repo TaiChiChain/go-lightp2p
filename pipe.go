@@ -18,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-msgio"
+	b58 "github.com/mr-tron/base58/base58"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/sha3"
@@ -177,7 +178,7 @@ func (p *PipeImpl) init() error {
 					continue
 				}
 
-				from := msg.ReceivedFrom.String()
+				from := b58.Encode(msg.From)
 				if from == p.selfPeerID {
 					continue
 				}
@@ -324,7 +325,7 @@ func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Put(ctx context.Context, p peer
 	return a.ps.Put(p, seqnoValidatorPeerMetadataStoreKey, v)
 }
 
-func messageIdFn(pmsg *pb.Message) string { // nolint: revive
+func messageIdFn(pmsg *pb.Message) string {
 	h := sha3.New256()
 	_, _ = h.Write([]byte(pmsg.GetTopic()))
 	_, _ = h.Write(pmsg.Data)
