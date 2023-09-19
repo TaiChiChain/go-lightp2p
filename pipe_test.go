@@ -6,10 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
 )
 
 func testPipe(t *testing.T, typ PipeBroadcastType) {
+	l := logrus.New()
+	l.Level = logrus.ErrorLevel
 	p2ps := generateNetworks(t, 3, true, []Option{
 		WithPipe(PipeConfig{
 			BroadcastType:       typ,
@@ -27,6 +30,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 				SeenMessagesTTL:        120 * time.Second,
 			},
 		}),
+		WithLogger(l),
 	}, nil)
 
 	ctx := context.Background()
@@ -35,7 +39,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 	pipeID := "test_pipe"
 	for _, p2p := range p2ps {
 		pipe, err := p2p.CreatePipe(ctx, pipeID)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		pipes = append(pipes, pipe)
 		p2pIDs = append(p2pIDs, p2p.PeerID())
 	}
@@ -44,7 +48,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 	pipeID2 := "test_pipe2"
 	for _, p2p := range p2ps {
 		pipe, err := p2p.CreatePipe(ctx, pipeID2)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		pipes2 = append(pipes2, pipe)
 	}
 
@@ -52,22 +56,24 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 	time.Sleep(1000 * time.Millisecond)
 
 	for i, sender := range pipes {
+		sender := sender
 		msg := []byte(fmt.Sprintf("msg_from_sender_%d", i))
 		err := sender.Broadcast(ctx, p2pIDs, msg)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		for j, pipe := range pipes {
+			pipe := pipe
 			if j == i {
 				timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-				defer timeoutCancel()
 				pipeRecveMsg := pipe.Receive(timeoutCtx)
-				assert.Nil(t, pipeRecveMsg, p2pIDs[j])
+				require.Nil(t, pipeRecveMsg, p2pIDs[j])
+				timeoutCancel()
 			} else {
 				timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-				defer timeoutCancel()
 				pipeRecveMsg := pipe.Receive(timeoutCtx)
-				assert.NotNil(t, pipeRecveMsg)
-				assert.Equal(t, p2pIDs[i], pipeRecveMsg.From)
-				assert.Equal(t, msg, pipeRecveMsg.Data)
+				require.NotNil(t, pipeRecveMsg)
+				require.Equal(t, p2pIDs[i], pipeRecveMsg.From)
+				require.Equal(t, msg, pipeRecveMsg.Data)
+				timeoutCancel()
 			}
 		}
 	}
@@ -77,7 +83,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer timeoutCancel()
 		pipeRecveMsg := pipe.Receive(timeoutCtx)
-		assert.Nil(t, pipeRecveMsg, p2pIDs[i])
+		require.Nil(t, pipeRecveMsg, p2pIDs[i])
 	}
 
 	// check unicast
@@ -88,13 +94,13 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 			}
 			msg := []byte(fmt.Sprintf("msg_from_sender_%d_to_receiver_%d", i, j))
 			err := sender.Send(ctx, p2pIDs[j], msg)
-			assert.Nil(t, err)
+			require.Nil(t, err)
 			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer timeoutCancel()
 			pipeRecveMsg := receiver.Receive(timeoutCtx)
-			assert.NotNil(t, pipeRecveMsg)
-			assert.Equal(t, p2pIDs[i], pipeRecveMsg.From)
-			assert.Equal(t, msg, pipeRecveMsg.Data)
+			require.NotNil(t, pipeRecveMsg)
+			require.Equal(t, p2pIDs[i], pipeRecveMsg.From)
+			require.Equal(t, msg, pipeRecveMsg.Data)
 		}
 	}
 
@@ -107,17 +113,17 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 
 			msg := []byte(fmt.Sprintf("msg_from_sender_%d_to_receiver_%d", i, j))
 			err := sender.Send(ctx, p2pIDs[j], msg)
-			assert.Nil(t, err)
+			require.Nil(t, err)
 			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer timeoutCancel()
 			pipeRecveMsg := receiver.Receive(timeoutCtx)
-			assert.Nil(t, pipeRecveMsg)
+			require.Nil(t, pipeRecveMsg)
 		}
 	}
 	for i, sender := range pipes {
 		msg := []byte(fmt.Sprintf("msg_from_sender_%d", i))
 		err := sender.Broadcast(ctx, p2pIDs, msg)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		for j, receiver := range pipes2 {
 			if i == j {
 				continue
@@ -125,7 +131,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer timeoutCancel()
 			pipeRecveMsg := receiver.Receive(timeoutCtx)
-			assert.Nil(t, pipeRecveMsg)
+			require.Nil(t, pipeRecveMsg)
 		}
 	}
 }
