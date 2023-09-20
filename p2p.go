@@ -134,6 +134,10 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		}
 		if conf.pipe.Gossipsub.UseCustomMsgIDFunc {
 			opts = append(opts, pubsub.WithMessageIdFn(messageIdFn))
+		} else {
+			opts = append(opts, pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
+				ps: h.Peerstore(),
+			})))
 		}
 		ps, err = pubsub.NewGossipSub(ctx, h, opts...)
 		if err != nil {
