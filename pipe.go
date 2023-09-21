@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
 
 	"github.com/Rican7/retry"
@@ -15,17 +16,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-msgio"
+	"github.com/minio/highwayhash"
 	b58 "github.com/mr-tron/base58/base58"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/sha3"
-)
-
-const (
-	seqnoValidatorPeerMetadataStoreKey = "gossip_validator_seqno"
 )
 
 type PipeManagerImpl struct {
@@ -303,31 +299,18 @@ func (p *PipeImpl) Receive(ctx context.Context) *PipeMsg {
 	}
 }
 
-type SeqnoValidatorPeerMetadataStoreAdaptor struct {
-	ps peerstore.Peerstore
+type messageIDGenerator struct {
+	key []byte
 }
 
-func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Get(ctx context.Context, p peer.ID) ([]byte, error) {
-	res, err := a.ps.Get(p, seqnoValidatorPeerMetadataStoreKey)
-	if err != nil {
-		if errors.Is(err, peerstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
+func newMessageIDGenerater(key []byte) (*messageIDGenerator, error) {
+	if len(key) != 32 {
+		return nil, errors.Errorf("highwayhash key length must be 32, get %v", len(key))
 	}
-	if res == nil {
-		return nil, nil
-	}
-	return res.([]byte), nil
+	return &messageIDGenerator{key: key}, nil
 }
 
-func (a *SeqnoValidatorPeerMetadataStoreAdaptor) Put(ctx context.Context, p peer.ID, v []byte) error {
-	return a.ps.Put(p, seqnoValidatorPeerMetadataStoreKey, v)
-}
-
-func messageIdFn(pmsg *pb.Message) string {
-	h := sha3.New256()
-	_, _ = h.Write([]byte(pmsg.GetTopic()))
-	_, _ = h.Write(pmsg.Data)
-	return string(h.Sum(nil))
+func (g *messageIDGenerator) generateMessageID(pmsg *pb.Message) string {
+	h := highwayhash.Sum64(pmsg.Data, g.key)
+	return strconv.FormatUint(h, 10)
 }

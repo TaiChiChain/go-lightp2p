@@ -13,8 +13,8 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	connmgr "github.com/libp2p/go-libp2p/core/connmgr"
-	crypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/connmgr"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -30,6 +30,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/sha3"
 )
 
 var (
@@ -125,20 +126,29 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 	switch conf.pipe.BroadcastType {
 	case PipeBroadcastSimple:
 	case PipeBroadcastGossip:
+		skBytes, err := conf.privKey.Raw()
+		if err != nil {
+			return nil, err
+		}
+		harsher := sha3.New256()
+		_, err = harsher.Write(skBytes)
+		if err != nil {
+			return nil, err
+		}
+		g, err := newMessageIDGenerater(harsher.Sum(nil))
+		if err != nil {
+			return nil, err
+		}
 		opts := []pubsub.Option{
 			pubsub.WithDiscovery(discoveryrouting.NewRoutingDiscovery(dynamicRouting)),
 			pubsub.WithPeerOutboundQueueSize(conf.pipe.Gossipsub.PeerOutboundBufferSize),
 			pubsub.WithValidateQueueSize(conf.pipe.Gossipsub.ValidateBufferSize),
 			pubsub.WithSeenMessagesTTL(conf.pipe.Gossipsub.SeenMessagesTTL),
 			pubsub.WithMaxMessageSize(4 << 20),
+			pubsub.WithMessageIdFn(g.generateMessageID),
+			pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		}
-		if conf.pipe.Gossipsub.UseCustomMsgIDFunc {
-			opts = append(opts, pubsub.WithMessageIdFn(messageIdFn))
-		} else {
-			opts = append(opts, pubsub.WithDefaultValidator(pubsub.NewBasicSeqnoValidator(&SeqnoValidatorPeerMetadataStoreAdaptor{
-				ps: h.Peerstore(),
-			})))
-		}
+
 		ps, err = pubsub.NewGossipSub(ctx, h, opts...)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed on create p2p gossip pubsub")
