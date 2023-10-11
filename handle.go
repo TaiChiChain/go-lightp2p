@@ -55,6 +55,10 @@ func waitMsg(stream network.Stream, timeout time.Duration) ([]byte, error) {
 }
 
 func (p2p *P2P) send(s *stream, msg []byte) error {
+	if len(msg) > network.MessageSizeMax {
+		return msgio.ErrMsgTooLarge
+	}
+
 	if err := s.getStream().SetWriteDeadline(time.Now().Add(p2p.config.sendTimeout)); err != nil {
 		return fmt.Errorf("set write deadline failed: %w", err)
 	}
