@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
@@ -55,85 +56,127 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 	// wait pubsub startup
 	time.Sleep(1000 * time.Millisecond)
 
-	for i, sender := range pipes {
-		sender := sender
-		msg := []byte(fmt.Sprintf("msg_from_sender_%d", i))
-		err := sender.Broadcast(ctx, p2pIDs, msg)
-		require.Nil(t, err)
-		for j, pipe := range pipes {
-			pipe := pipe
-			if j == i {
-				timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-				pipeRecveMsg := pipe.Receive(timeoutCtx)
-				require.Nil(t, pipeRecveMsg, p2pIDs[j])
-				timeoutCancel()
-			} else {
-				timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-				pipeRecveMsg := pipe.Receive(timeoutCtx)
-				require.NotNil(t, pipeRecveMsg)
-				require.Equal(t, p2pIDs[i], pipeRecveMsg.From)
-				require.Equal(t, msg, pipeRecveMsg.Data)
-				timeoutCancel()
+	// check broadcast
+	t.Run("check broadcast", func(t *testing.T) {
+		for i, sender := range pipes {
+			sender := sender
+			msg := []byte(fmt.Sprintf("msg_from_sender_%d", i))
+			err := sender.Broadcast(ctx, p2pIDs, msg)
+			require.Nil(t, err)
+			for j, pipe := range pipes {
+				pipe := pipe
+				if j == i {
+					timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					pipeRecveMsg := pipe.Receive(timeoutCtx)
+					require.Nil(t, pipeRecveMsg, p2pIDs[j])
+					timeoutCancel()
+				} else {
+					timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					pipeRecveMsg := pipe.Receive(timeoutCtx)
+					require.NotNil(t, pipeRecveMsg)
+					require.Equal(t, p2pIDs[i], pipeRecveMsg.From)
+					require.Equal(t, msg, pipeRecveMsg.Data)
+					timeoutCancel()
+				}
 			}
 		}
-	}
+	})
 
 	// check no msgs
-	for i, pipe := range pipes {
-		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer timeoutCancel()
-		pipeRecveMsg := pipe.Receive(timeoutCtx)
-		require.Nil(t, pipeRecveMsg, p2pIDs[i])
-	}
+	t.Run("check no msgs", func(t *testing.T) {
+		for i, pipe := range pipes {
+			func() {
+				timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer timeoutCancel()
+				pipeRecveMsg := pipe.Receive(timeoutCtx)
+				require.Nil(t, pipeRecveMsg, p2pIDs[i])
+			}()
+		}
+	})
 
 	// check unicast
-	for i, sender := range pipes {
-		for j, receiver := range pipes {
-			if i == j {
-				continue
+	t.Run("check unicast", func(t *testing.T) {
+		for i, sender := range pipes {
+			for j, receiver := range pipes {
+				if i == j {
+					continue
+				}
+				func() {
+					msg := []byte(fmt.Sprintf("msg_from_sender_%d_to_receiver_%d", i, j))
+					err := sender.Send(ctx, p2pIDs[j], msg)
+					require.Nil(t, err)
+					timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					defer timeoutCancel()
+					pipeRecveMsg := receiver.Receive(timeoutCtx)
+					require.NotNil(t, pipeRecveMsg)
+					require.Equal(t, p2pIDs[i], pipeRecveMsg.From)
+					require.Equal(t, msg, pipeRecveMsg.Data)
+				}()
 			}
-			msg := []byte(fmt.Sprintf("msg_from_sender_%d_to_receiver_%d", i, j))
-			err := sender.Send(ctx, p2pIDs[j], msg)
+		}
+	})
+
+	//	check unicast too large msg
+	t.Run("check unicast too large msg", func(t *testing.T) {
+		sender, receiver := pipes[0], pipes[1]
+
+		func() {
+			tooLargeMsg := make([]byte, network.MessageSizeMax+100)
+			err := sender.Send(ctx, p2pIDs[1], tooLargeMsg)
+			fmt.Println(err)
+			require.Error(t, err)
+		}()
+
+		// after is normal
+		func() {
+			msg := []byte("msg_from_sender_0_to_receiver_1")
+			err := sender.Send(ctx, p2pIDs[1], msg)
 			require.Nil(t, err)
 			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer timeoutCancel()
 			pipeRecveMsg := receiver.Receive(timeoutCtx)
 			require.NotNil(t, pipeRecveMsg)
-			require.Equal(t, p2pIDs[i], pipeRecveMsg.From)
+			require.Equal(t, p2pIDs[0], pipeRecveMsg.From)
 			require.Equal(t, msg, pipeRecveMsg.Data)
-		}
-	}
+		}()
+	})
 
 	// check pipe isolation
-	for i, sender := range pipes {
-		for j, receiver := range pipes2 {
-			if i == j {
-				continue
-			}
+	t.Run("check pipe isolation", func(t *testing.T) {
+		for i, sender := range pipes {
+			for j, receiver := range pipes2 {
+				if i == j {
+					continue
+				}
 
-			msg := []byte(fmt.Sprintf("msg_from_sender_%d_to_receiver_%d", i, j))
-			err := sender.Send(ctx, p2pIDs[j], msg)
-			require.Nil(t, err)
-			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer timeoutCancel()
-			pipeRecveMsg := receiver.Receive(timeoutCtx)
-			require.Nil(t, pipeRecveMsg)
-		}
-	}
-	for i, sender := range pipes {
-		msg := []byte(fmt.Sprintf("msg_from_sender_%d", i))
-		err := sender.Broadcast(ctx, p2pIDs, msg)
-		require.Nil(t, err)
-		for j, receiver := range pipes2 {
-			if i == j {
-				continue
+				func() {
+					msg := []byte(fmt.Sprintf("msg_from_sender_%d_to_receiver_%d", i, j))
+					err := sender.Send(ctx, p2pIDs[j], msg)
+					require.Nil(t, err)
+					timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					defer timeoutCancel()
+					pipeRecveMsg := receiver.Receive(timeoutCtx)
+					require.Nil(t, pipeRecveMsg)
+				}()
 			}
-			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer timeoutCancel()
-			pipeRecveMsg := receiver.Receive(timeoutCtx)
-			require.Nil(t, pipeRecveMsg)
 		}
-	}
+		for i, sender := range pipes {
+			msg := []byte(fmt.Sprintf("msg_from_sender_%d", i))
+			err := sender.Broadcast(ctx, p2pIDs, msg)
+			require.Nil(t, err)
+			for j, receiver := range pipes2 {
+				if i == j {
+					continue
+				}
+				func() {
+					timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					defer timeoutCancel()
+					pipeRecveMsg := receiver.Receive(timeoutCtx)
+					require.Nil(t, pipeRecveMsg)
+				}()
+			}
+		}
+	})
 }
 
 func TestPipe_simple(t *testing.T) {

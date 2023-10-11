@@ -37,7 +37,7 @@ func getAddr(p2p *P2P) (peer.AddrInfo, error) {
 
 type P2PWrapper struct {
 	*P2P
-	t              *testing.T
+	t              testing.TB
 	realAddr       peer.AddrInfo
 	realListenPort int
 	PID            peer.ID
@@ -69,7 +69,7 @@ func (w *P2PWrapper) ConnectP2P(t *P2PWrapper) {
 	assert.Nil(w.t, err)
 }
 
-func generateNetwork(t *testing.T, opts []Option) *P2PWrapper {
+func generateNetwork(t testing.TB, opts []Option) *P2PWrapper {
 	sk, pk, err := ic.GenerateECDSAKeyPair(rand.Reader)
 	assert.Nil(t, err)
 	pid, err := peer.IDFromPublicKey(pk)
@@ -108,7 +108,7 @@ func generateNetwork(t *testing.T, opts []Option) *P2PWrapper {
 	}
 }
 
-func generateNetworks(t *testing.T, cnt int, autoConnect bool, commonOpts []Option, customOptsSetter func(index int) []Option) []*P2PWrapper {
+func generateNetworks(t testing.TB, cnt int, autoConnect bool, commonOpts []Option, customOptsSetter func(index int) []Option) []*P2PWrapper {
 	if commonOpts == nil {
 		commonOpts = []Option{}
 	}

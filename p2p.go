@@ -148,6 +148,9 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 			pubsub.WithMessageIdFn(g.generateMessageID),
 			pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		}
+		if conf.pipe.Gossipsub.EventTracer != nil {
+			opts = append(opts, pubsub.WithEventTracer(conf.pipe.Gossipsub.EventTracer))
+		}
 
 		ps, err = pubsub.NewGossipSub(ctx, h, opts...)
 		if err != nil {

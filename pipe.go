@@ -114,6 +114,7 @@ func (p *PipeImpl) init() error {
 
 				p.config.logger.WithFields(logrus.Fields{
 					"error": err,
+					"from":  remote,
 					"pipe":  p.fullProtocolID(),
 				}).Warn("Read msg failed")
 
@@ -121,6 +122,7 @@ func (p *PipeImpl) init() error {
 				if err := s.Close(); err != nil {
 					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
+						"from":  remote,
 						"pipe":  p.fullProtocolID(),
 					}).Warn("Release stream failed")
 				}
@@ -131,6 +133,7 @@ func (p *PipeImpl) init() error {
 				if err := s.Close(); err != nil {
 					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
+						"from":  remote,
 						"pipe":  p.fullProtocolID(),
 					}).Warn("Release stream failed")
 				}
@@ -208,10 +211,19 @@ func (p *PipeImpl) processBroadcastWorkers() {
 	}
 }
 
-func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) error {
+func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error) {
+	defer func() {
+		if err != nil {
+			err = errors.Wrapf(err, "pipe[%s] send msg failed", p.fullProtocolID())
+		}
+	}()
+
 	peerID, err := peer.Decode(to)
 	if err != nil {
 		return fmt.Errorf("failed on decode peer id: %v", err)
+	}
+	if len(data) > network.MessageSizeMax {
+		return msgio.ErrMsgTooLarge
 	}
 
 	switch p.host.Network().Connectedness(peerID) {
@@ -250,7 +262,17 @@ func (p *PipeImpl) getStream(peerID peer.ID) (network.Stream, error) {
 	return p.host.NewStream(p.ctx, peerID, pid)
 }
 
-func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte) error {
+func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte) (err error) {
+	defer func() {
+		if err != nil {
+			err = errors.Wrapf(err, "pipe[%s] broadcast msg failed", p.fullProtocolID())
+		}
+	}()
+
+	if len(data) > network.MessageSizeMax {
+		return msgio.ErrMsgTooLarge
+	}
+
 	if p.pubsub != nil {
 		return p.topic.Publish(ctx, data)
 	}
@@ -272,7 +294,7 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 				if err != nil {
 					p.config.logger.WithFields(logrus.Fields{
 						"error": err,
-						"id":    id,
+						"to":    id,
 					}).Error("Broadcast message failed")
 				}
 			}(id)
