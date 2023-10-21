@@ -17,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-msgio"
 	"github.com/minio/highwayhash"
 	b58 "github.com/mr-tron/base58/base58"
@@ -27,6 +28,7 @@ import (
 type PipeManagerImpl struct {
 	ctx    context.Context
 	host   host.Host
+	router routing.Routing
 	pubsub *pubsub.PubSub
 	config *Config
 
@@ -34,10 +36,11 @@ type PipeManagerImpl struct {
 	pipes map[string]*PipeImpl
 }
 
-func NewPipeManager(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, config *Config) (PipeManager, error) {
+func NewPipeManager(ctx context.Context, host host.Host, router routing.Routing, pubsub *pubsub.PubSub, config *Config) (PipeManager, error) {
 	return &PipeManagerImpl{
 		ctx:    ctx,
 		host:   host,
+		router: router,
 		pubsub: pubsub,
 		config: config,
 		lock:   &sync.RWMutex{},
@@ -52,7 +55,7 @@ func (m *PipeManagerImpl) CreatePipe(ctx context.Context, pipeID string) (Pipe, 
 		return nil, errors.Errorf("pipe[%s] alerady exists", pipeID)
 	}
 
-	p, err := newPipe(ctx, m.host, m.pubsub, m.config, pipeID)
+	p, err := newPipe(ctx, m.host, m.router, m.pubsub, m.config, pipeID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +72,7 @@ type pipeBroadcastWorker func()
 type PipeImpl struct {
 	ctx               context.Context
 	host              host.Host
+	router            routing.Routing
 	pubsub            *pubsub.PubSub
 	config            *Config
 	pipeID            string
@@ -79,10 +83,11 @@ type PipeImpl struct {
 	broadcastWorkerCh chan pipeBroadcastWorker
 }
 
-func newPipe(ctx context.Context, host host.Host, pubsub *pubsub.PubSub, config *Config, pipeID string) (*PipeImpl, error) {
+func newPipe(ctx context.Context, host host.Host, router routing.Routing, pubsub *pubsub.PubSub, config *Config, pipeID string) (*PipeImpl, error) {
 	return &PipeImpl{
 		ctx:               ctx,
 		host:              host,
+		router:            router,
 		pubsub:            pubsub,
 		config:            config,
 		pipeID:            pipeID,
@@ -103,30 +108,19 @@ func (p *PipeImpl) fullProtocolID() protocol.ID {
 func (p *PipeImpl) init() error {
 	p.host.SetStreamHandler(p.fullProtocolID(), func(s network.Stream) {
 		remote := s.Conn().RemotePeer().String()
-		reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
 
-		for {
+		err := func() error {
+			ctx, cancel := context.WithTimeout(p.ctx, p.config.pipe.UnicastReadTimeout)
+			defer cancel()
+			deadline, _ := ctx.Deadline()
+
+			if err := s.SetReadDeadline(deadline); err != nil {
+				return errors.Wrap(err, "failed to set read deadline")
+			}
+			reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
 			msg, err := reader.ReadMsg()
 			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, network.ErrReset) {
-					return
-				}
-
-				p.config.logger.WithFields(logrus.Fields{
-					"error": err,
-					"from":  remote,
-					"pipe":  p.fullProtocolID(),
-				}).Warn("Read msg failed")
-
-				// release stream
-				if err := s.Close(); err != nil {
-					p.config.logger.WithFields(logrus.Fields{
-						"error": err,
-						"from":  remote,
-						"pipe":  p.fullProtocolID(),
-					}).Warn("Release stream failed")
-				}
-				return
+				return err
 			}
 			select {
 			case <-p.ctx.Done():
@@ -137,13 +131,20 @@ func (p *PipeImpl) init() error {
 						"pipe":  p.fullProtocolID(),
 					}).Warn("Release stream failed")
 				}
-
-				return
+				return nil
 			case p.msgCh <- PipeMsg{
 				From: remote,
 				Data: msg,
 			}:
 			}
+			return nil
+		}()
+		if err != nil {
+			p.config.logger.WithFields(logrus.Fields{
+				"err":  err,
+				"from": remote,
+				"pipe": p.fullProtocolID(),
+			}).Warn("Read msg failed")
 		}
 	})
 
@@ -192,9 +193,10 @@ func (p *PipeImpl) init() error {
 				}
 			}
 		}()
+	} else {
+		go p.processBroadcastWorkers()
 	}
 
-	go p.processBroadcastWorkers()
 	return nil
 }
 
@@ -226,21 +228,55 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 		return msgio.ErrMsgTooLarge
 	}
 
-	switch p.host.Network().Connectedness(peerID) {
-	case network.CannotConnect:
-		return fmt.Errorf("cannot connect to %q", to)
-	default:
-		stream, err := p.getStream(peerID)
+	p.host.ConnManager().Protect(peerID, p.pipeID)
+	defer p.host.ConnManager().Unprotect(peerID, p.pipeID)
+
+	// check has peer addr
+	if len(p.host.Peerstore().Addrs(peerID)) == 0 {
+		var err error
+		func() {
+			timedCtx, cancel := context.WithTimeout(ctx, p.config.pipe.FindPeerTimeout)
+			defer cancel()
+			// try to find the peer by dht
+			_, err = p.router.FindPeer(timedCtx, peerID)
+		}()
+		if err != nil {
+			p.config.logger.WithError(err).Warn("address not found in both peer store and routing system")
+		}
+	}
+
+	return retry.Retry(func(attempt uint) error {
+		// try dial
+		if p.host.Network().Connectedness(peerID) != network.Connected {
+			err = func() error {
+				timedCtx, cancel := context.WithTimeout(ctx, p.config.pipe.ConnectTimeout)
+				defer cancel()
+				// try to find the peer by dht
+				return p.host.Connect(timedCtx, peer.AddrInfo{ID: peerID})
+			}()
+			if err != nil {
+				return err
+			}
+		}
+
+		stream, err := p.host.NewStream(p.ctx, peerID, p.fullProtocolID())
 		if err != nil {
 			return err
 		}
 
 		writer := msgio.NewVarintWriter(stream)
 		if err = writer.WriteMsg(data); err != nil {
+			if resetErr := stream.Reset(); resetErr != nil {
+				p.config.logger.WithError(resetErr).WithField("to", peerID).Error("Failed to reset stream")
+			}
+
 			return err
 		}
-	}
-	return nil
+		if err = stream.Close(); err != nil {
+			p.config.logger.WithError(err).WithField("to", peerID).Error("Failed to close stream")
+		}
+		return nil
+	}, strategy.Backoff(backoff.BinaryExponential(p.config.pipe.UnicastSendRetryBaseTime)), strategy.Limit(uint(p.config.pipe.UnicastSendRetryNumber)))
 }
 
 func (p *PipeImpl) getStream(peerID peer.ID) (network.Stream, error) {
@@ -288,9 +324,7 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 			go func(id string) {
 				defer wg.Done()
 
-				err := retry.Retry(func(attempt uint) error {
-					return p.Send(ctx, id, data)
-				}, strategy.Backoff(backoff.BinaryExponential(p.config.pipe.SimpleBroadcast.RetryBaseTime)), strategy.Limit(uint(p.config.pipe.SimpleBroadcast.RetryNumber)))
+				err := p.Send(ctx, id, data)
 				if err != nil {
 					p.config.logger.WithFields(logrus.Fields{
 						"error": err,

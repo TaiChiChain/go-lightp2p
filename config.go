@@ -58,15 +58,18 @@ type PipeGossipsubConfig struct {
 type PipeSimpleConfig struct {
 	WorkerCacheSize        int
 	WorkerConcurrencyLimit int
-	RetryNumber            int
-	RetryBaseTime          time.Duration
 }
 
 type PipeConfig struct {
-	BroadcastType       PipeBroadcastType
-	ReceiveMsgCacheSize int
-	SimpleBroadcast     PipeSimpleConfig
-	Gossipsub           PipeGossipsubConfig
+	BroadcastType            PipeBroadcastType
+	ReceiveMsgCacheSize      int
+	SimpleBroadcast          PipeSimpleConfig
+	Gossipsub                PipeGossipsubConfig
+	UnicastReadTimeout       time.Duration
+	UnicastSendRetryNumber   int
+	UnicastSendRetryBaseTime time.Duration
+	FindPeerTimeout          time.Duration
+	ConnectTimeout           time.Duration
 }
 
 type Config struct {
@@ -191,8 +194,6 @@ func generateConfig(opts ...Option) (*Config, error) {
 			SimpleBroadcast: PipeSimpleConfig{
 				WorkerCacheSize:        1024,
 				WorkerConcurrencyLimit: 20,
-				RetryNumber:            5,
-				RetryBaseTime:          100 * time.Millisecond,
 			},
 			Gossipsub: PipeGossipsubConfig{
 				SubBufferSize:          1024,
@@ -200,6 +201,11 @@ func generateConfig(opts ...Option) (*Config, error) {
 				ValidateBufferSize:     1024,
 				SeenMessagesTTL:        120 * time.Second,
 			},
+			UnicastReadTimeout:       5 * time.Second,
+			UnicastSendRetryNumber:   5,
+			UnicastSendRetryBaseTime: 100 * time.Millisecond,
+			FindPeerTimeout:          10 * time.Second,
+			ConnectTimeout:           1 * time.Second,
 		},
 	}
 	for _, opt := range opts {

@@ -20,7 +20,7 @@ type pipeResult struct {
 	receivedTracker map[string]int
 }
 
-func benchmarkPipe(b *testing.B, typ PipeBroadcastType, tps int, totalMsgs int) {
+func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalMsgs int) {
 	l := logrus.New()
 	l.Level = logrus.ErrorLevel
 	err := log.SetLogLevelRegex("pubsub", "error")
@@ -32,8 +32,6 @@ func benchmarkPipe(b *testing.B, typ PipeBroadcastType, tps int, totalMsgs int) 
 			SimpleBroadcast: PipeSimpleConfig{
 				WorkerCacheSize:        1024,
 				WorkerConcurrencyLimit: 20,
-				RetryNumber:            5,
-				RetryBaseTime:          100 * time.Millisecond,
 			},
 			Gossipsub: PipeGossipsubConfig{
 				SubBufferSize:          1024,
@@ -42,6 +40,11 @@ func benchmarkPipe(b *testing.B, typ PipeBroadcastType, tps int, totalMsgs int) 
 				SeenMessagesTTL:        120 * time.Second,
 				EventTracer:            &EventTracer{},
 			},
+			UnicastReadTimeout:       5 * time.Second,
+			UnicastSendRetryNumber:   5,
+			UnicastSendRetryBaseTime: 100 * time.Millisecond,
+			FindPeerTimeout:          10 * time.Second,
+			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
 	}, nil)
@@ -78,7 +81,6 @@ func benchmarkPipe(b *testing.B, typ PipeBroadcastType, tps int, totalMsgs int) 
 				msgIdx := binary.BigEndian.Uint64(msg.Data[1:])
 				r.msgs[msg.From][msgIdx] = true
 				r.receivedTracker[msg.From]++
-				time.Sleep(70 * time.Millisecond)
 				if r.receivedTracker[msg.From]%(totalMsgs/20) == 0 {
 					fmt.Printf("%s receive msg total count %d from %s\n", p2pIDs[idx], r.receivedTracker[msg.From], msg.From)
 				}
@@ -139,12 +141,87 @@ func (t *EventTracer) Trace(evt *pb.TraceEvent) {
 	// }
 }
 
-func BenchmarkNamePipe_simple(b *testing.B) {
+func BenchmarkPipe_simple(b *testing.B) {
 	tps := 2000
-	benchmarkPipe(b, PipeBroadcastSimple, tps, tps*20)
+	benchmarkPipeBroadcast(b, PipeBroadcastSimple, tps, tps*20)
 }
 
-func BenchmarkNamePipe_gossip(b *testing.B) {
+func BenchmarkPipe_gossip(b *testing.B) {
 	tps := 2000
-	benchmarkPipe(b, PipeBroadcastGossip, tps, tps*20)
+	benchmarkPipeBroadcast(b, PipeBroadcastGossip, tps, tps*20)
+}
+
+func BenchmarkNamePipe_unicast(b *testing.B) {
+	tps := 2000
+	totalMsgs := 20 * tps
+
+	l := logrus.New()
+	l.Level = logrus.ErrorLevel
+	err := log.SetLogLevelRegex("pubsub", "error")
+	require.Nil(b, err)
+	p2ps := generateNetworks(b, 2, true, []Option{
+		WithPipe(PipeConfig{
+			BroadcastType:       PipeBroadcastGossip,
+			ReceiveMsgCacheSize: 1024,
+			SimpleBroadcast: PipeSimpleConfig{
+				WorkerCacheSize:        1024,
+				WorkerConcurrencyLimit: 20,
+			},
+			Gossipsub: PipeGossipsubConfig{
+				SubBufferSize:          1024,
+				PeerOutboundBufferSize: 1024,
+				ValidateBufferSize:     1024,
+				SeenMessagesTTL:        120 * time.Second,
+				EventTracer:            &EventTracer{},
+			},
+			UnicastReadTimeout:       5 * time.Second,
+			UnicastSendRetryNumber:   5,
+			UnicastSendRetryBaseTime: 100 * time.Millisecond,
+			FindPeerTimeout:          10 * time.Second,
+			ConnectTimeout:           1 * time.Second,
+		}),
+		WithLogger(l),
+	}, nil)
+
+	ctx := context.Background()
+	receiverID := p2ps[1].PeerID()
+	pipeID := "benchmark_pipe"
+	senderPipe, err := p2ps[0].CreatePipe(ctx, pipeID)
+	require.Nil(b, err)
+	receiverPipe, err := p2ps[1].CreatePipe(ctx, pipeID)
+	require.Nil(b, err)
+
+	go func() {
+		limiter := rate.NewLimiter(rate.Limit(tps), 1)
+		ctx := context.Background()
+		for j := 0; j < totalMsgs; j++ {
+			err := limiter.Wait(ctx)
+			require.Nil(b, err)
+			data := make([]byte, 9)
+			data[0] = byte(j)
+			binary.BigEndian.PutUint64(data[1:], uint64(j))
+			err = senderPipe.Send(context.Background(), receiverID, data)
+			require.Nil(b, err)
+		}
+	}()
+	msgs := make([]bool, totalMsgs)
+	receivedCnt := 0
+	for {
+		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		msg := receiverPipe.Receive(timeoutCtx)
+		timeoutCancel()
+		require.NotNil(b, msg)
+		msgIdx := binary.BigEndian.Uint64(msg.Data[1:])
+		msgs[msgIdx] = true
+		receivedCnt++
+		if receivedCnt == totalMsgs {
+			break
+		}
+		if receivedCnt%(totalMsgs/20) == 0 {
+			fmt.Printf("receive msg total count %d\n", receivedCnt)
+		}
+	}
+	for _, received := range msgs {
+		require.True(b, received)
+	}
 }
