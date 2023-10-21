@@ -21,8 +21,6 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 			SimpleBroadcast: PipeSimpleConfig{
 				WorkerCacheSize:        1024,
 				WorkerConcurrencyLimit: 20,
-				RetryNumber:            5,
-				RetryBaseTime:          100 * time.Millisecond,
 			},
 			Gossipsub: PipeGossipsubConfig{
 				SubBufferSize:          1024,
@@ -30,6 +28,11 @@ func testPipe(t *testing.T, typ PipeBroadcastType) {
 				ValidateBufferSize:     1024,
 				SeenMessagesTTL:        120 * time.Second,
 			},
+			UnicastReadTimeout:       5 * time.Second,
+			UnicastSendRetryNumber:   5,
+			UnicastSendRetryBaseTime: 100 * time.Millisecond,
+			FindPeerTimeout:          10 * time.Second,
+			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
 	}, nil)
