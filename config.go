@@ -53,6 +53,8 @@ type PipeGossipsubConfig struct {
 	SeenMessagesTTL time.Duration
 
 	EventTracer pubsub.EventTracer
+
+	EnableMetrics bool
 }
 
 type PipeSimpleConfig struct {
@@ -200,6 +202,7 @@ func generateConfig(opts ...Option) (*Config, error) {
 				PeerOutboundBufferSize: 1024,
 				ValidateBufferSize:     1024,
 				SeenMessagesTTL:        120 * time.Second,
+				EnableMetrics:          false,
 			},
 			UnicastReadTimeout:       5 * time.Second,
 			UnicastSendRetryNumber:   5,
