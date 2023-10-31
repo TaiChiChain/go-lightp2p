@@ -38,7 +38,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 				PeerOutboundBufferSize: 1024,
 				ValidateBufferSize:     1024,
 				SeenMessagesTTL:        120 * time.Second,
-				EventTracer:            &EventTracer{},
+				EventTracer:            &testEventTracer{},
 			},
 			UnicastReadTimeout:       5 * time.Second,
 			UnicastSendRetryNumber:   5,
@@ -129,10 +129,10 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 	}
 }
 
-type EventTracer struct {
+type testEventTracer struct {
 }
 
-func (t *EventTracer) Trace(evt *pb.TraceEvent) {
+func (t *testEventTracer) Trace(evt *pb.TraceEvent) {
 	// switch *evt.Type {
 	// case pb.TraceEvent_DUPLICATE_MESSAGE:
 	//	fmt.Println("TraceEvent_DUPLICATE_MESSAGE")
@@ -172,7 +172,7 @@ func BenchmarkNamePipe_unicast(b *testing.B) {
 				PeerOutboundBufferSize: 1024,
 				ValidateBufferSize:     1024,
 				SeenMessagesTTL:        120 * time.Second,
-				EventTracer:            &EventTracer{},
+				EventTracer:            &testEventTracer{},
 			},
 			UnicastReadTimeout:       5 * time.Second,
 			UnicastSendRetryNumber:   5,

@@ -150,6 +150,10 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		}
 		if conf.pipe.Gossipsub.EventTracer != nil {
 			opts = append(opts, pubsub.WithEventTracer(conf.pipe.Gossipsub.EventTracer))
+		} else {
+			if conf.pipe.Gossipsub.EnableMetrics {
+				opts = append(opts, pubsub.WithRawTracer(&MetricsTracer{}))
+			}
 		}
 
 		ps, err = pubsub.NewGossipSub(ctx, h, opts...)
