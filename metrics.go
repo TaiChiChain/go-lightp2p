@@ -13,11 +13,11 @@ var (
 		Name:      "duplicate_msg_counter",
 		Help:      "the total number of duplicate msgs",
 	})
-	rejectedMsgNum = prometheus.NewGauge(prometheus.GaugeOpts{
+	rejectedMsgNum = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "gossipsub",
 		Name:      "rejected_msg_counter",
 		Help:      "the total number of rejected msgs",
-	})
+	}, []string{"reason"})
 	undeliverableMsgNum = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "gossipsub",
 		Name:      "undeliverable_msg_counter",
@@ -37,7 +37,6 @@ func init() {
 	prometheus.MustRegister(deliveredMsgNum)
 
 	duplicateMsgNum.Set(0)
-	rejectedMsgNum.Set(0)
 	undeliverableMsgNum.Set(0)
 	deliveredMsgNum.Set(0)
 }
@@ -64,7 +63,8 @@ func (t *MetricsTracer) DeliverMessage(msg *pubsub.Message) {
 }
 
 func (t *MetricsTracer) RejectMessage(msg *pubsub.Message, reason string) {
-	rejectedMsgNum.Inc()
+	rejectedMsgNum.With(prometheus.Labels{"reason": reason}).Inc()
+	rejectedMsgNum.With(prometheus.Labels{"reason": "all"}).Inc()
 }
 
 func (t *MetricsTracer) DuplicateMessage(msg *pubsub.Message) {
