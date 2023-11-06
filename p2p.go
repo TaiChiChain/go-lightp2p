@@ -27,6 +27,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -86,6 +87,7 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		libp2p.NoListenAddrs,
 		libp2p.ConnectionGater(conf.gater),
 		libp2p.ResourceManager(rm),
+		libp2p.Transport(tcp.NewTCPTransport, tcp.DisableReuseport()),
 	}
 
 	switch conf.securityType {
