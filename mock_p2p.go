@@ -7,11 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
+	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 )
 
@@ -21,21 +23,48 @@ var (
 	ErrMockP2PNotSupport = errors.New("mock p2p not support")
 
 	ErrPeerNotExist = errors.New("peer id not exist")
+
+	ErrPipeNotExist = errors.New("pipe not exist")
 )
 
 const queueSize = 100
 
 type MockP2P struct {
-	host      *mockHost
-	receiveCh chan *mockMsg
+	host         *mockHost
+	receiveCh    chan *mockMsg
+	pipeRevCh    chan *mockPipeMsg
+	pipeConnects map[string]chan *mockPipeMsg
+	pipeSubs     map[string]*mockPipe
+	bus          EventBus.Bus
 
 	messageHandler MessageHandler
 	logger         logrus.FieldLogger
 }
 
+func pipeHandler(ch chan *PipeMsg, msg *PipeMsg) {
+	ch <- msg
+}
+
 // CreatePipe implements Network.
-func (*MockP2P) CreatePipe(ctx context.Context, pipeID string) (Pipe, error) {
-	return nil, errors.New("create pipe not supported for mock p2p")
+func (m *MockP2P) CreatePipe(ctx context.Context, pipeID string) (Pipe, error) {
+	if _, ok := m.pipeSubs[pipeID]; ok {
+		return nil, errors.Errorf("pipe[%s] alerady exists", pipeID)
+	}
+
+	pipe := &mockPipe{
+		localID:      m.PeerID(),
+		pipeID:       pipeID,
+		pipeConnects: m.pipeConnects,
+		msgCh:        make(chan *PipeMsg, queueSize),
+	}
+
+	err := m.bus.Subscribe(pipeID, pipeHandler)
+	if err != nil {
+		return nil, err
+	}
+	m.pipeSubs[pipeID] = pipe
+
+	return pipe, nil
 }
 
 type mockMsg struct {
@@ -43,9 +72,82 @@ type mockMsg struct {
 	data   []byte
 }
 
+type mockPipeMsg struct {
+	to     string
+	pipeID string
+	msg    *PipeMsg
+	errCh  chan error
+}
+
+type mockPipe struct {
+	localID      string
+	pipeID       string
+	pipeConnects map[string]chan *mockPipeMsg
+	msgCh        chan *PipeMsg
+}
+
+func (m *mockPipe) Send(ctx context.Context, to string, data []byte) error {
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+	pipeMsg := &mockPipeMsg{
+		to:     to,
+		pipeID: m.pipeID,
+		msg: &PipeMsg{
+			From: m.localID,
+			Data: dataCopy,
+		},
+		errCh: make(chan error, 1),
+	}
+	ch, exist := m.pipeConnects[to]
+	if !exist {
+		return ErrPipeNotExist
+	}
+	ch <- pipeMsg
+	return <-pipeMsg.errCh
+}
+
+func (m *mockPipe) Broadcast(ctx context.Context, targets []string, data []byte) error {
+	for _, to := range targets {
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+		pipeMsg := &mockPipeMsg{
+			to:     to,
+			pipeID: m.pipeID,
+			msg: &PipeMsg{
+				From: m.localID,
+				Data: dataCopy,
+			},
+			errCh: make(chan error, 1),
+		}
+		ch, exist := m.pipeConnects[to]
+		if !exist {
+			return ErrPipeNotExist
+		}
+		ch <- pipeMsg
+		if err := <-pipeMsg.errCh; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *mockPipe) Receive(ctx context.Context) *PipeMsg {
+	select {
+	case <-ctx.Done():
+		return nil
+	case msg := <-m.msgCh:
+		return msg
+	}
+}
+
+func (m *mockPipe) String() string {
+	return m.pipeID
+}
+
 type MockHostManager struct {
-	peers    []string
-	connects map[string]chan *mockMsg
+	peers        []string
+	connects     map[string]chan *mockMsg
+	pipeConnects map[string]chan *mockPipeMsg
 }
 
 type mockHost struct {
@@ -61,18 +163,22 @@ func NewMockP2P(peerID string, mockHostManager *MockHostManager, logger logrus.F
 	if logger == nil {
 		logger = logrus.New().WithField("module", "mock_p2p")
 	}
-	filteredConnects := make(map[string]chan *mockMsg, len(mockHostManager.connects)-1)
-	for id := range mockHostManager.connects {
-		if id != peerID {
-			filteredConnects[id] = mockHostManager.connects[id]
-		}
-	}
+	filteredConnects := lo.PickBy(mockHostManager.connects, func(key string, value chan *mockMsg) bool {
+		return key != peerID
+	})
+	filteredPipeConnects := lo.PickBy(mockHostManager.pipeConnects, func(key string, value chan *mockPipeMsg) bool {
+		return key != peerID
+	})
 	return &MockP2P{
 		host: &mockHost{
 			peerID:   peerID,
 			connects: filteredConnects,
 		},
+		bus:            EventBus.New(),
+		pipeConnects:   filteredPipeConnects,
+		pipeSubs:       make(map[string]*mockPipe),
 		receiveCh:      mockHostManager.connects[peerID],
+		pipeRevCh:      mockHostManager.pipeConnects[peerID],
 		messageHandler: nil,
 		logger:         logger,
 	}, nil
@@ -80,7 +186,7 @@ func NewMockP2P(peerID string, mockHostManager *MockHostManager, logger logrus.F
 
 func GenMockHostManager(peers []string) *MockHostManager {
 	filterMap := make(map[string]bool, len(peers))
-	filteredPeers := make([]string, len(peers))
+	filteredPeers := make([]string, 0)
 	for _, id := range peers {
 		_, exist := filterMap[id]
 		if !exist {
@@ -92,9 +198,15 @@ func GenMockHostManager(peers []string) *MockHostManager {
 	for _, id := range filteredPeers {
 		connects[id] = make(chan *mockMsg, queueSize)
 	}
+
+	pipeConnects := make(map[string]chan *mockPipeMsg, len(peers))
+	for _, id := range filteredPeers {
+		pipeConnects[id] = make(chan *mockPipeMsg, queueSize)
+	}
 	return &MockHostManager{
-		peers:    filteredPeers,
-		connects: connects,
+		peers:        filteredPeers,
+		connects:     connects,
+		pipeConnects: pipeConnects,
 	}
 }
 
@@ -204,6 +316,26 @@ func (m *MockP2P) Start() error {
 			}
 		}
 	}()
+
+	go func() {
+		for {
+			select {
+			case msg := <-m.pipeRevCh:
+				if msg.to != m.PeerID() {
+					msg.errCh <- fmt.Errorf("to peer [%s] not match", msg.to)
+					continue
+				}
+				pipe, exist := m.pipeSubs[msg.pipeID]
+				if !exist {
+					msg.errCh <- ErrPipeNotExist
+					continue
+				}
+				m.bus.Publish(msg.pipeID, pipe.msgCh, &PipeMsg{From: msg.msg.From, Data: msg.msg.Data})
+				msg.errCh <- nil
+			}
+		}
+	}()
+
 	return nil
 }
 

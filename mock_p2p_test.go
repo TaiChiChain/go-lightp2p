@@ -1,13 +1,121 @@
 package network
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestCreatePipe(t *testing.T) {
+	peerIDs := []string{"1", "2"}
+	mockHostManager := GenMockHostManager(peerIDs)
+	peer1, err := NewMockP2P(peerIDs[0], mockHostManager, nil)
+	assert.Nil(t, err)
+	peer2, err := NewMockP2P(peerIDs[1], mockHostManager, nil)
+	assert.Nil(t, err)
+	err = peer1.Start()
+	assert.Nil(t, err)
+	err = peer2.Start()
+	assert.Nil(t, err)
+
+	pipeId := "test"
+	pipe1, err := peer1.CreatePipe(context.Background(), pipeId)
+	assert.Nil(t, err)
+	assert.Equal(t, pipeId, pipe1.String())
+
+	pipe2, err := peer2.CreatePipe(context.Background(), pipeId)
+	assert.Nil(t, err)
+	assert.Equal(t, pipeId, pipe2.String())
+
+	taskDoneCh := make(chan string, 1)
+	go func() {
+		for {
+			msg := pipe2.Receive(context.Background())
+			assert.Equal(t, "1", msg.From)
+			assert.Equal(t, []byte("send pipe msg from 1 to 2"), msg.Data)
+			taskDoneCh <- pipe2.String()
+		}
+	}()
+
+	err = pipe1.Send(context.Background(), "2", []byte("send pipe msg from 1 to 2"))
+	assert.Nil(t, err)
+	v := <-taskDoneCh
+	assert.Equal(t, pipe2.String(), v)
+
+	// test duplicate pipe
+	_, err = peer1.CreatePipe(context.Background(), pipeId)
+	assert.NotNil(t, err)
+
+	pipeId = "testPipe_v2"
+	pip1, err := peer1.CreatePipe(context.Background(), pipeId)
+	assert.Nil(t, err)
+
+	// test pipe not exist
+	err = pip1.Send(context.Background(), "2", []byte("send pipe_v2 msg from 1 to 2"))
+	assert.NotNil(t, err)
+	assert.Equal(t, err.Error(), ErrPipeNotExist.Error())
+
+	pip2, err := peer2.CreatePipe(context.Background(), pipeId)
+	assert.Nil(t, err)
+
+	go func() {
+		for {
+			msg := pip2.Receive(context.Background())
+			assert.Equal(t, "1", msg.From)
+			assert.Equal(t, []byte("send pipe_v2 msg from 1 to 2"), msg.Data)
+			taskDoneCh <- pip2.String()
+		}
+	}()
+
+	err = pip1.Send(context.Background(), "2", []byte("send pipe_v2 msg from 1 to 2"))
+	assert.Nil(t, err)
+	v = <-taskDoneCh
+	assert.Equal(t, pip2.String(), v)
+}
+
+func TestMockPipe_Broadcast(t *testing.T) {
+	peerIDs := []string{"1", "2", "3", "4"}
+	mockHostManager := GenMockHostManager(peerIDs)
+	p2pM := make(map[string]*MockP2P)
+	pipeM := make(map[string]Pipe)
+	msgCh := make(map[string]chan *PipeMsg)
+	lo.ForEach(peerIDs, func(id string, _ int) {
+		p2p, err := NewMockP2P(id, mockHostManager, nil)
+		assert.Nil(t, err)
+		err = p2p.Start()
+		assert.Nil(t, err)
+		pipe, err := p2p.CreatePipe(context.Background(), "test")
+		assert.Nil(t, err)
+
+		msgCh[id] = make(chan *PipeMsg, queueSize)
+
+		go func() {
+			for {
+				msg := pipe.Receive(context.Background())
+				msgCh[id] <- msg
+			}
+		}()
+		pipeM[id] = pipe
+		p2pM[id] = p2p
+	})
+
+	err := pipeM["1"].Broadcast(context.Background(), []string{"2", "3", "4"}, []byte("test broadcast from 1"))
+	assert.Nil(t, err)
+
+	lo.ForEach(peerIDs, func(id string, _ int) {
+		if id == "1" {
+			return
+		}
+		msg := <-msgCh[id]
+		assert.Equal(t, "1", msg.From)
+		assert.Equal(t, []byte("test broadcast from 1"), msg.Data)
+	})
+}
 
 func TestMockP2P_Send(t *testing.T) {
 	peerIDs := []string{"1", "2"}
