@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ipfs/go-log/v2"
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
+	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
@@ -103,6 +105,108 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 				data[0] = byte(idx)
 				binary.BigEndian.PutUint64(data[1:], uint64(j))
 				err = pipes[idx].Broadcast(context.Background(), p2pIDs, data)
+				require.Nil(b, err)
+				// time.Sleep(5 * time.Millisecond)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	time.Sleep(5 * time.Second)
+	fmt.Println("\nstart check for lost messages")
+	// check for lost messages
+	for receiver, r := range results {
+		fmt.Println()
+		for sender, msgList := range r.msgs {
+			totalLost := 0
+			for _, msgReceived := range msgList {
+				if !msgReceived {
+					totalLost++
+				}
+				// require.True(b, msgReceived, fmt.Sprintf("%s lost msg[%d] from %s", receiver, msgIdx, sender))
+			}
+			fmt.Printf("%s lost msg total %d from %s\n", receiver, totalLost, sender)
+		}
+	}
+}
+
+func benchmarkMockPipeBroadcast(b *testing.B, tps int, totalMsgs int) {
+	l := logrus.New()
+	l.Level = logrus.ErrorLevel
+	err := log.SetLogLevelRegex("pubsub", "error")
+	require.Nil(b, err)
+	peers := []string{"0", "1", "2", "3"}
+	pm := GenMockHostManager(peers)
+	p2ps := make([]*MockP2P, 0)
+	lo.ForEach(peers, func(p string, i int) {
+		p2p, err := NewMockP2P(p, pm, nil)
+		require.Nil(b, err)
+		err = p2p.Start()
+		require.Nil(b, err)
+		p2ps = append(p2ps, p2p)
+	})
+
+	ctx := context.Background()
+	var pipes []Pipe
+	var p2pIDs []string
+	pipeID := "benchmark_pipe"
+	for _, p2p := range p2ps {
+		pipe, err := p2p.CreatePipe(ctx, pipeID)
+		require.Nil(b, err)
+		pipes = append(pipes, pipe)
+		p2pIDs = append(p2pIDs, p2p.PeerID())
+	}
+
+	// wait pubsub startup
+	time.Sleep(1000 * time.Millisecond)
+
+	results := make(map[string]*pipeResult)
+	for i := range p2ps {
+		r := &pipeResult{
+			msgs:            make(map[string][]bool),
+			receivedTracker: make(map[string]int),
+		}
+		results[p2pIDs[i]] = r
+		for j := range p2ps {
+			if i != j {
+				r.msgs[p2pIDs[j]] = make([]bool, totalMsgs)
+			}
+		}
+		go func(idx int) {
+			for {
+				msg := pipes[idx].Receive(context.Background())
+				msgIdx := binary.BigEndian.Uint64(msg.Data[1:])
+				if r.msgs[msg.From][msgIdx] {
+					panic(fmt.Sprintf("%s receive duplicated msg %d from %s", p2pIDs[idx], msgIdx, msg.From))
+				}
+				r.msgs[msg.From][msgIdx] = true
+				r.receivedTracker[msg.From]++
+				if r.receivedTracker[msg.From]%(totalMsgs/20) == 0 {
+					fmt.Printf("%s receive msg total count %d from %s\n", p2pIDs[idx], r.receivedTracker[msg.From], msg.From)
+				}
+			}
+		}(i)
+	}
+
+	fmt.Println("\nstart broadcast")
+	wg := new(sync.WaitGroup)
+	wg.Add(len(p2ps))
+	for i := range p2ps {
+		go func(idx int) {
+			defer wg.Done()
+			limiter := rate.NewLimiter(rate.Limit(tps), 1)
+			ctx := context.Background()
+			for j := 0; j < totalMsgs; j++ {
+				err := limiter.Wait(ctx)
+				require.Nil(b, err)
+				data := make([]byte, 9)
+				data[0] = byte(idx)
+				binary.BigEndian.PutUint64(data[1:], uint64(j))
+				remotePeers := lo.Filter(p2pIDs, func(p string, _ int) bool {
+					return p != strconv.Itoa(idx)
+				})
+				err = pipes[idx].Broadcast(context.Background(), remotePeers, data)
 				require.Nil(b, err)
 				// time.Sleep(5 * time.Millisecond)
 			}
@@ -224,4 +328,10 @@ func BenchmarkNamePipe_unicast(b *testing.B) {
 	for _, received := range msgs {
 		require.True(b, received)
 	}
+}
+
+func BenchmarkMockPipe(b *testing.B) {
+	tps := 2000
+	totalMsgs := 20 * tps
+	benchmarkMockPipeBroadcast(b, tps, totalMsgs)
 }
