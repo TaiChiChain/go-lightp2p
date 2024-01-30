@@ -28,6 +28,26 @@ var (
 		Name:      "delivered_msg_counter",
 		Help:      "the total number of delivered msgs",
 	})
+	sendDataSize = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "p2p",
+		Name:      "send_data_size",
+		Help:      "The size of sent data",
+	})
+	recvDataSize = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "p2p",
+		Name:      "recv_data_size",
+		Help:      "The size of receive data",
+	})
+	compressionReduceDataSize = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "p2p",
+		Name:      "compression_reduce_data_size",
+		Help:      "The reduce data size because of compression",
+	})
+	compressionIncreaseDataSize = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "p2p",
+		Name:      "compression_increase_data_size",
+		Help:      "The increase data size because of compression",
+	})
 )
 
 func init() {
@@ -35,6 +55,10 @@ func init() {
 	prometheus.MustRegister(rejectedMsgNum)
 	prometheus.MustRegister(undeliverableMsgNum)
 	prometheus.MustRegister(deliveredMsgNum)
+	prometheus.MustRegister(sendDataSize)
+	prometheus.MustRegister(recvDataSize)
+	prometheus.MustRegister(compressionReduceDataSize)
+	prometheus.MustRegister(compressionIncreaseDataSize)
 
 	duplicateMsgNum.Set(0)
 	undeliverableMsgNum.Set(0)

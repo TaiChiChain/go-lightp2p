@@ -34,6 +34,11 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+const (
+	noCompressionFlag uint8 = iota
+	snappyCompressionFlag
+)
+
 var (
 	reconnectInterval = 10 * time.Second
 	newStreamTimeout  = 5 * time.Second
@@ -388,7 +393,7 @@ func (p2p *P2P) Send(peerID string, msg []byte) ([]byte, error) {
 		return nil, errors.Wrap(err, "failed on send msg")
 	}
 
-	recvMsg, err := waitMsg(s.stream, p2p.config.readTimeout)
+	recvMsg, err := s.Read(p2p.config.readTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -592,7 +597,7 @@ func (p2p *P2P) newStream(peerID string) (*stream, error) {
 		return nil, errors.Wrap(err, "failed on create stream")
 	}
 
-	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout), nil
+	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.enableCompression, p2p.config.enableMetrics), nil
 }
 
 // called when network starts listening on an addr

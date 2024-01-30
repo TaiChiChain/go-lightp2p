@@ -81,6 +81,8 @@ type PipeImpl struct {
 	cancelRelay       pubsub.RelayCancelFunc
 	msgCh             chan PipeMsg
 	broadcastWorkerCh chan pipeBroadcastWorker
+	enableCompression bool
+	enableMetrics     bool
 }
 
 func newPipe(ctx context.Context, host host.Host, router routing.Routing, pubsub *pubsub.PubSub, config *Config, pipeID string) (*PipeImpl, error) {
@@ -94,6 +96,8 @@ func newPipe(ctx context.Context, host host.Host, router routing.Routing, pubsub
 		selfPeerID:        host.ID().String(),
 		msgCh:             make(chan PipeMsg, config.pipe.ReceiveMsgCacheSize),
 		broadcastWorkerCh: make(chan pipeBroadcastWorker, config.pipe.SimpleBroadcast.WorkerCacheSize),
+		enableCompression: config.enableCompression,
+		enableMetrics:     config.enableMetrics,
 	}, nil
 }
 
@@ -245,6 +249,11 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 		}
 	}
 
+	data, err = compressMsg(data, p.enableCompression, p.config.enableMetrics)
+	if err != nil {
+		return err
+	}
+
 	return retry.Retry(func(attempt uint) error {
 		// try dial
 		if p.host.Network().Connectedness(peerID) != network.Connected {
@@ -272,6 +281,11 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 
 			return err
 		}
+
+		if p.enableMetrics {
+			sendDataSize.Add(float64(len(data)))
+		}
+
 		if err = stream.Close(); err != nil {
 			p.config.logger.WithError(err).WithField("to", peerID).Error("Failed to close stream")
 		}
@@ -310,7 +324,20 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 	}
 
 	if p.pubsub != nil {
-		return p.topic.Publish(ctx, data)
+		data, err = compressMsg(data, p.enableCompression, p.config.enableMetrics)
+		if err != nil {
+			return err
+		}
+
+		err := p.topic.Publish(ctx, data)
+		if err != nil {
+			return err
+		}
+
+		if p.enableMetrics {
+			sendDataSize.Add(float64(len(data)))
+		}
+		return nil
 	}
 
 	worker := func() {
@@ -344,7 +371,20 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 	return nil
 }
 
-func (p *PipeImpl) Receive(ctx context.Context) *PipeMsg {
+func (p *PipeImpl) Receive(ctx context.Context) (pmsg *PipeMsg) {
+	defer func() {
+		if pmsg != nil {
+			data, err := decompressMsg(pmsg.Data)
+			if err == nil {
+				pmsg.Data = data
+			}
+		}
+
+		if p.enableMetrics && pmsg != nil {
+			recvDataSize.Add(float64(len(pmsg.Data)))
+		}
+	}()
+
 	select {
 	case <-ctx.Done():
 		return nil

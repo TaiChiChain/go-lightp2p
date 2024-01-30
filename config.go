@@ -88,6 +88,8 @@ type Config struct {
 	sendTimeout          time.Duration
 	readTimeout          time.Duration
 	pipe                 PipeConfig
+	enableCompression    bool
+	enableMetrics        bool
 }
 
 type Option func(*Config)
@@ -171,6 +173,18 @@ func WithPipe(t PipeConfig) Option {
 	}
 }
 
+func WithCompression(enableCompression bool) Option {
+	return func(config *Config) {
+		config.enableCompression = enableCompression
+	}
+}
+
+func WithMetrics(enableMetrics bool) Option {
+	return func(config *Config) {
+		config.enableMetrics = enableMetrics
+	}
+}
+
 func checkConfig(config *Config) error {
 	if config.logger == nil {
 		config.logger = logrus.New()
@@ -210,6 +224,8 @@ func generateConfig(opts ...Option) (*Config, error) {
 			FindPeerTimeout:          10 * time.Second,
 			ConnectTimeout:           1 * time.Second,
 		},
+		enableCompression: false,
+		enableMetrics:     false,
 	}
 	for _, opt := range opts {
 		opt(conf)

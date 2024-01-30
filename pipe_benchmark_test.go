@@ -22,7 +22,7 @@ type pipeResult struct {
 	receivedTracker map[string]int
 }
 
-func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalMsgs int) {
+func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, enableCompression bool, tps int, totalMsgs int, extraBigData []byte) {
 	l := logrus.New()
 	l.Level = logrus.ErrorLevel
 	err := log.SetLogLevelRegex("pubsub", "error")
@@ -30,15 +30,15 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 	p2ps := generateNetworks(b, 4, true, []Option{
 		WithPipe(PipeConfig{
 			BroadcastType:       typ,
-			ReceiveMsgCacheSize: 1024,
+			ReceiveMsgCacheSize: 2048,
 			SimpleBroadcast: PipeSimpleConfig{
 				WorkerCacheSize:        1024,
 				WorkerConcurrencyLimit: 20,
 			},
 			Gossipsub: PipeGossipsubConfig{
-				SubBufferSize:          1024,
-				PeerOutboundBufferSize: 1024,
-				ValidateBufferSize:     1024,
+				SubBufferSize:          2048,
+				PeerOutboundBufferSize: 2048,
+				ValidateBufferSize:     2048,
 				SeenMessagesTTL:        120 * time.Second,
 				EventTracer:            &testEventTracer{},
 			},
@@ -49,6 +49,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
+		WithCompression(enableCompression),
 	}, nil)
 
 	ctx := context.Background()
@@ -62,6 +63,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 		p2pIDs = append(p2pIDs, p2p.PeerID())
 	}
 
+	fmt.Println("\nwait for pubsub startup")
 	// wait pubsub startup
 	time.Sleep(1000 * time.Millisecond)
 
@@ -106,13 +108,14 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 				binary.BigEndian.PutUint64(data[1:], uint64(j))
 				err = pipes[idx].Broadcast(context.Background(), p2pIDs, data)
 				require.Nil(b, err)
-				// time.Sleep(5 * time.Millisecond)
 			}
+			fmt.Printf("\nfinished broadcast, pip index: %d, time: %s\n", idx, time.Now().Format("2006-01-02 15:04:05.999999999 -0700 MST"))
 		}(i)
 	}
 
 	wg.Wait()
 
+	fmt.Println("\nwaiting for receiving message")
 	time.Sleep(5 * time.Second)
 	fmt.Println("\nstart check for lost messages")
 	// check for lost messages
@@ -123,6 +126,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, tps int, totalM
 			for _, msgReceived := range msgList {
 				if !msgReceived {
 					totalLost++
+					//fmt.Printf("%s lost msg id %d from %s\n", receiver, index, sender)
 				}
 				// require.True(b, msgReceived, fmt.Sprintf("%s lost msg[%d] from %s", receiver, msgIdx, sender))
 			}
@@ -247,15 +251,22 @@ func (t *testEventTracer) Trace(evt *pb.TraceEvent) {
 
 func BenchmarkPipe_simple(b *testing.B) {
 	tps := 2000
-	benchmarkPipeBroadcast(b, PipeBroadcastSimple, tps, tps*20)
+	benchmarkPipeBroadcast(b, PipeBroadcastSimple, false, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastSimple, true, tps, tps*20, nil)
 }
 
 func BenchmarkPipe_gossip(b *testing.B) {
 	tps := 2000
-	benchmarkPipeBroadcast(b, PipeBroadcastGossip, tps, tps*20)
+	benchmarkPipeBroadcast(b, PipeBroadcastGossip, false, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastGossip, true, tps, tps*20, nil)
 }
 
 func BenchmarkNamePipe_unicast(b *testing.B) {
+	benchmarkPipeUnicast(b, false)
+	benchmarkPipeUnicast(b, true)
+}
+
+func benchmarkPipeUnicast(b *testing.B, enableCompression bool) {
 	tps := 2000
 	totalMsgs := 20 * tps
 
@@ -285,6 +296,7 @@ func BenchmarkNamePipe_unicast(b *testing.B) {
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
+		WithCompression(enableCompression),
 	}, nil)
 
 	ctx := context.Background()
