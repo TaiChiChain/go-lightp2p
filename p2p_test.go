@@ -403,6 +403,51 @@ func TestP2P_SendWithNetworkBusy(t *testing.T) {
 	assert.Equal(t, msg, recvData)
 }
 
+func TestP2P_SendWithCompression(t *testing.T) {
+	p2ps := generateNetworks(t, 2, true, []Option{
+		WithCompression(true),
+	}, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
+	msg := []byte("hello")
+
+	p2.SetMessageHandler(func(s Stream, data []byte) {
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		err := s.AsyncSend(data)
+		assert.Nil(t, err)
+	})
+
+	rdata, err := p1.Send(p2.PeerID(), msg)
+	assert.Nil(t, err)
+	assert.Equal(t, msg, rdata)
+
+	time.Sleep(1 * time.Second)
+	// simulate network disconnect
+	assert.Nil(t, p2.Stop())
+	time.Sleep(1 * time.Second)
+	assert.False(t, p1.IsConnected(p2.PeerID()))
+
+	_, err = p1.Send(p2.PeerID(), msg)
+	assert.NotNil(t, err)
+
+	time.Sleep(5 * time.Second)
+	// recover p2
+	p2.Reset()
+	p2.SetMessageHandler(func(s Stream, data []byte) {
+		defer p2.ReleaseStream(s)
+		assert.Equal(t, msg, data)
+		err := s.AsyncSend(data)
+		assert.Nil(t, err)
+	})
+
+	// send message to p2
+	recvData, err := p1.Send(p2.PeerID(), msg)
+	assert.Nil(t, err)
+	assert.Equal(t, msg, recvData)
+}
+
 func TestP2p_MultiSend(t *testing.T) {
 	p2ps := generateNetworks(t, 2, true, nil, nil)
 	p1 := p2ps[0]

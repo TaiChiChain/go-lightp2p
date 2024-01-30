@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/golang/snappy"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-msgio"
 	"github.com/pkg/errors"
@@ -28,6 +29,16 @@ func (p2p *P2P) handleMessage(s *stream) error {
 		return nil
 	}
 
+	msg, err = decompressMsg(msg)
+	if err != nil {
+		p2p.logger.WithField("error", err).Error("Handle msg decompress error")
+		return errors.Errorf("Decompress receive msg error")
+	}
+
+	if p2p.config.enableMetrics {
+		recvDataSize.Add(float64(len(msg)))
+	}
+
 	if p2p.messageHandler != nil {
 		p2p.messageHandler(s, msg)
 	}
@@ -36,7 +47,7 @@ func (p2p *P2P) handleMessage(s *stream) error {
 }
 
 func (p2p *P2P) handleNewStream(s network.Stream) {
-	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout))
+	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.enableCompression, p2p.config.enableMetrics))
 	if err != nil {
 		if err != io.EOF {
 			p2p.logger.WithField("error", err).Error("Handle message failed")
@@ -46,12 +57,26 @@ func (p2p *P2P) handleNewStream(s network.Stream) {
 }
 
 // waitMsg wait the incoming messages within time duration.
-func waitMsg(stream network.Stream, timeout time.Duration) ([]byte, error) {
+func waitMsg(stream network.Stream, timeout time.Duration, enableMetrics bool) ([]byte, error) {
 	if err := stream.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline failed: %w", err)
 	}
 	reader := msgio.NewVarintReaderSize(stream, network.MessageSizeMax)
-	return reader.ReadMsg()
+
+	msg, err := reader.ReadMsg()
+	if err != nil {
+		return nil, err
+	}
+	msg, err = decompressMsg(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	if enableMetrics {
+		recvDataSize.Add(float64(len(msg)))
+	}
+
+	return msg, nil
 }
 
 func (p2p *P2P) send(s *stream, msg []byte) error {
@@ -59,14 +84,49 @@ func (p2p *P2P) send(s *stream, msg []byte) error {
 		return msgio.ErrMsgTooLarge
 	}
 
-	if err := s.getStream().SetWriteDeadline(time.Now().Add(p2p.config.sendTimeout)); err != nil {
-		return fmt.Errorf("set write deadline failed: %w", err)
+	return s.AsyncSend(msg)
+}
+
+func compressMsg(msg []byte, enableCompression, enableMetrics bool) ([]byte, error) {
+	var dstData []byte
+	if enableCompression {
+		compressionData := snappy.Encode(nil, msg)
+		dstData = make([]byte, 0, len(compressionData)+1)
+		dstData = append(dstData, snappyCompressionFlag)
+		dstData = append(dstData, compressionData...)
+	} else {
+		dstData = make([]byte, 0, len(msg)+1)
+		dstData = append(dstData, noCompressionFlag)
+		dstData = append(dstData, msg...)
 	}
 
-	writer := msgio.NewVarintWriter(s.getStream())
-	if err := writer.WriteMsg(msg); err != nil {
-		return fmt.Errorf("write msg: %w", err)
+	if enableMetrics {
+		if reduceDataSize := (len(msg) - len(dstData)); reduceDataSize > 0 {
+			compressionReduceDataSize.Add(float64(reduceDataSize))
+		} else {
+			compressionIncreaseDataSize.Add(-float64(reduceDataSize))
+		}
 	}
 
-	return nil
+	return dstData, nil
+}
+
+func decompressMsg(msg []byte) ([]byte, error) {
+	if len(msg) < 2 {
+		return nil, fmt.Errorf("decompress msg error, msg length < 2")
+	}
+
+	var dstData []byte
+	var err error
+	switch msg[0] {
+	case noCompressionFlag:
+		dstData = msg[1:]
+	case snappyCompressionFlag:
+		dstData, err = snappy.Decode(nil, msg[1:])
+		if err != nil {
+			return nil, fmt.Errorf("can't decode msg data, error: %s", err)
+		}
+	}
+
+	return dstData, nil
 }

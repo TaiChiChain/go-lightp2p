@@ -22,16 +22,20 @@ const (
 )
 
 type stream struct {
-	stream      network.Stream
-	sendTimeout time.Duration
-	readTimeout time.Duration
+	stream            network.Stream
+	sendTimeout       time.Duration
+	readTimeout       time.Duration
+	enableCompression bool
+	enableMetrics     bool
 }
 
-func newStream(s network.Stream, sendTimeout time.Duration, readTimeout time.Duration) *stream {
+func newStream(s network.Stream, sendTimeout time.Duration, readTimeout time.Duration, enableCompression, enableMetrics bool) *stream {
 	return &stream{
-		stream:      s,
-		sendTimeout: sendTimeout,
-		readTimeout: readTimeout,
+		stream:            s,
+		sendTimeout:       sendTimeout,
+		readTimeout:       readTimeout,
+		enableCompression: enableCompression,
+		enableMetrics:     enableMetrics,
 	}
 }
 
@@ -64,9 +68,19 @@ func (s *stream) AsyncSend(msg []byte) error {
 		return fmt.Errorf("set deadline: %w", err)
 	}
 
+	var err error
+	msg, err = compressMsg(msg, s.enableCompression, s.enableMetrics)
+	if err != nil {
+		return err
+	}
+
 	writer := msgio.NewVarintWriter(s.getStream())
 	if err := writer.WriteMsg(msg); err != nil {
 		return fmt.Errorf("write msg: %w", err)
+	}
+
+	if s.enableMetrics {
+		sendDataSize.Add(float64(len(msg)))
 	}
 
 	return nil
@@ -77,7 +91,7 @@ func (s *stream) Send(msg []byte) ([]byte, error) {
 		return nil, errors.Wrap(err, "failed on send msg")
 	}
 
-	recvMsg, err := waitMsg(s.getStream(), s.readTimeout)
+	recvMsg, err := waitMsg(s.getStream(), s.readTimeout, s.enableMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +100,7 @@ func (s *stream) Send(msg []byte) ([]byte, error) {
 }
 
 func (s *stream) Read(timeout time.Duration) ([]byte, error) {
-	recvMsg, err := waitMsg(s.getStream(), timeout)
+	recvMsg, err := waitMsg(s.getStream(), timeout, s.enableMetrics)
 	if err != nil {
 		return nil, err
 	}
