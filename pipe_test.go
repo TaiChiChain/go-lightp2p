@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func testPipe(t *testing.T, typ PipeBroadcastType, compressionOption CompressionAlgo) {
+func testPipe(t *testing.T, typ PipeBroadcastType, compressionAlgo CompressionAlgo) {
 	l := logrus.New()
 	l.Level = logrus.ErrorLevel
 	p2ps := generateNetworks(t, 3, true, []Option{
@@ -35,7 +35,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType, compressionOption Compression
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
-		WithCompressionOption(compressionOption),
+		WithCompressionOption(compressionAlgo),
 	}, nil)
 
 	ctx := context.Background()

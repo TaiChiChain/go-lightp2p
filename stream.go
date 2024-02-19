@@ -22,20 +22,20 @@ const (
 )
 
 type stream struct {
-	stream            network.Stream
-	sendTimeout       time.Duration
-	readTimeout       time.Duration
-	compressionOption CompressionAlgo
-	enableMetrics     bool
+	stream          network.Stream
+	sendTimeout     time.Duration
+	readTimeout     time.Duration
+	compressionAlgo CompressionAlgo
+	enableMetrics   bool
 }
 
-func newStream(s network.Stream, sendTimeout time.Duration, readTimeout time.Duration, compressionOption CompressionAlgo, enableMetrics bool) *stream {
+func newStream(s network.Stream, sendTimeout time.Duration, readTimeout time.Duration, compressionAlgo CompressionAlgo, enableMetrics bool) *stream {
 	return &stream{
-		stream:            s,
-		sendTimeout:       sendTimeout,
-		readTimeout:       readTimeout,
-		compressionOption: compressionOption,
-		enableMetrics:     enableMetrics,
+		stream:          s,
+		sendTimeout:     sendTimeout,
+		readTimeout:     readTimeout,
+		compressionAlgo: compressionAlgo,
+		enableMetrics:   enableMetrics,
 	}
 }
 
@@ -69,7 +69,7 @@ func (s *stream) AsyncSend(msg []byte) error {
 	}
 
 	var err error
-	msg, err = compressMsg(msg, s.compressionOption, s.enableMetrics)
+	msg, err = compressMsg(msg, s.compressionAlgo, s.enableMetrics)
 	if err != nil {
 		return err
 	}
