@@ -403,9 +403,9 @@ func TestP2P_SendWithNetworkBusy(t *testing.T) {
 	assert.Equal(t, msg, recvData)
 }
 
-func TestP2P_SendWithCompression(t *testing.T) {
+func testP2PCompression(t *testing.T, option CompressionAlgo) {
 	p2ps := generateNetworks(t, 2, true, []Option{
-		WithCompression(true),
+		WithCompressionOption(option),
 	}, nil)
 	p1 := p2ps[0]
 	p2 := p2ps[1]
@@ -446,6 +446,11 @@ func TestP2P_SendWithCompression(t *testing.T) {
 	recvData, err := p1.Send(p2.PeerID(), msg)
 	assert.Nil(t, err)
 	assert.Equal(t, msg, recvData)
+}
+
+func TestP2P_SendWithCompression(t *testing.T) {
+	testP2PCompression(t, SnappyCompression)
+	testP2PCompression(t, ZstdCompression)
 }
 
 func TestP2p_MultiSend(t *testing.T) {

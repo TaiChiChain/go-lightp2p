@@ -22,7 +22,7 @@ type pipeResult struct {
 	receivedTracker map[string]int
 }
 
-func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, enableCompression bool, tps int, totalMsgs int, extraBigData []byte) {
+func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, compressionOption CompressionAlgo, tps int, totalMsgs int, extraBigData []byte) {
 	l := logrus.New()
 	l.Level = logrus.ErrorLevel
 	err := log.SetLogLevelRegex("pubsub", "error")
@@ -49,7 +49,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, enableCompressi
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
-		WithCompression(enableCompression),
+		WithCompressionOption(compressionOption),
 	}, nil)
 
 	ctx := context.Background()
@@ -251,22 +251,25 @@ func (t *testEventTracer) Trace(evt *pb.TraceEvent) {
 
 func BenchmarkPipe_simple(b *testing.B) {
 	tps := 2000
-	benchmarkPipeBroadcast(b, PipeBroadcastSimple, false, tps, tps*20, nil)
-	benchmarkPipeBroadcast(b, PipeBroadcastSimple, true, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastSimple, NoCompression, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastSimple, SnappyCompression, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastSimple, ZstdCompression, tps, tps*20, nil)
 }
 
 func BenchmarkPipe_gossip(b *testing.B) {
 	tps := 2000
-	benchmarkPipeBroadcast(b, PipeBroadcastGossip, false, tps, tps*20, nil)
-	benchmarkPipeBroadcast(b, PipeBroadcastGossip, true, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastGossip, NoCompression, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastGossip, SnappyCompression, tps, tps*20, nil)
+	benchmarkPipeBroadcast(b, PipeBroadcastGossip, ZstdCompression, tps, tps*20, nil)
 }
 
 func BenchmarkNamePipe_unicast(b *testing.B) {
-	benchmarkPipeUnicast(b, false)
-	benchmarkPipeUnicast(b, true)
+	benchmarkPipeUnicast(b, NoCompression)
+	benchmarkPipeUnicast(b, SnappyCompression)
+	benchmarkPipeUnicast(b, ZstdCompression)
 }
 
-func benchmarkPipeUnicast(b *testing.B, enableCompression bool) {
+func benchmarkPipeUnicast(b *testing.B, compressionOption CompressionAlgo) {
 	tps := 2000
 	totalMsgs := 20 * tps
 
@@ -296,7 +299,7 @@ func benchmarkPipeUnicast(b *testing.B, enableCompression bool) {
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
-		WithCompression(enableCompression),
+		WithCompressionOption(compressionOption),
 	}, nil)
 
 	ctx := context.Background()
