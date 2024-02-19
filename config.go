@@ -88,7 +88,7 @@ type Config struct {
 	sendTimeout          time.Duration
 	readTimeout          time.Duration
 	pipe                 PipeConfig
-	enableCompression    bool
+	compressionOption    CompressionAlgo
 	enableMetrics        bool
 }
 
@@ -173,9 +173,9 @@ func WithPipe(t PipeConfig) Option {
 	}
 }
 
-func WithCompression(enableCompression bool) Option {
+func WithCompressionOption(compressionOption CompressionAlgo) Option {
 	return func(config *Config) {
-		config.enableCompression = enableCompression
+		config.compressionOption = compressionOption
 	}
 }
 
@@ -224,7 +224,7 @@ func generateConfig(opts ...Option) (*Config, error) {
 			FindPeerTimeout:          10 * time.Second,
 			ConnectTimeout:           1 * time.Second,
 		},
-		enableCompression: false,
+		compressionOption: NoCompression,
 		enableMetrics:     false,
 	}
 	for _, opt := range opts {

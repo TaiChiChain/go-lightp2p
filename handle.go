@@ -47,7 +47,7 @@ func (p2p *P2P) handleMessage(s *stream) error {
 }
 
 func (p2p *P2P) handleNewStream(s network.Stream) {
-	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.enableCompression, p2p.config.enableMetrics))
+	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.compressionOption, p2p.config.enableMetrics))
 	if err != nil {
 		if err != io.EOF {
 			p2p.logger.WithField("error", err).Error("Handle message failed")
@@ -87,17 +87,25 @@ func (p2p *P2P) send(s *stream, msg []byte) error {
 	return s.AsyncSend(msg)
 }
 
-func compressMsg(msg []byte, enableCompression, enableMetrics bool) ([]byte, error) {
+func compressMsg(msg []byte, compressionOption CompressionAlgo, enableMetrics bool) ([]byte, error) {
 	var dstData []byte
-	if enableCompression {
+	switch compressionOption {
+	case NoCompression:
+		dstData = make([]byte, 0, len(msg)+1)
+		dstData = append(dstData, byte(NoCompression))
+		dstData = append(dstData, msg...)
+	case SnappyCompression:
 		compressionData := snappy.Encode(nil, msg)
 		dstData = make([]byte, 0, len(compressionData)+1)
-		dstData = append(dstData, snappyCompressionFlag)
+		dstData = append(dstData, byte(SnappyCompression))
 		dstData = append(dstData, compressionData...)
-	} else {
-		dstData = make([]byte, 0, len(msg)+1)
-		dstData = append(dstData, noCompressionFlag)
-		dstData = append(dstData, msg...)
+	case ZstdCompression:
+		compressionData := zstdEncoder.EncodeAll(msg, nil)
+		dstData = make([]byte, 0, len(compressionData)+1)
+		dstData = append(dstData, byte(ZstdCompression))
+		dstData = append(dstData, compressionData...)
+	default:
+		return nil, errors.New("not support compression option")
 	}
 
 	if enableMetrics {
@@ -119,10 +127,15 @@ func decompressMsg(msg []byte) ([]byte, error) {
 	var dstData []byte
 	var err error
 	switch msg[0] {
-	case noCompressionFlag:
+	case byte(NoCompression):
 		dstData = msg[1:]
-	case snappyCompressionFlag:
+	case byte(SnappyCompression):
 		dstData, err = snappy.Decode(nil, msg[1:])
+		if err != nil {
+			return nil, fmt.Errorf("can't decode msg data, error: %s", err)
+		}
+	case byte(ZstdCompression):
+		dstData, err = zstdDecoder.DecodeAll(msg[1:], nil)
 		if err != nil {
 			return nil, fmt.Errorf("can't decode msg data, error: %s", err)
 		}

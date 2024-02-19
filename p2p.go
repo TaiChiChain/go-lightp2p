@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/klauspost/compress/zstd"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
@@ -34,14 +35,19 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+type CompressionAlgo uint8
+
 const (
-	noCompressionFlag uint8 = iota
-	snappyCompressionFlag
+	NoCompression CompressionAlgo = iota
+	SnappyCompression
+	ZstdCompression
 )
 
 var (
 	reconnectInterval = 10 * time.Second
 	newStreamTimeout  = 5 * time.Second
+	zstdEncoder, _    = zstd.NewWriter(nil)
+	zstdDecoder, _    = zstd.NewReader(nil)
 )
 
 var _ Network = (*P2P)(nil)
@@ -597,7 +603,7 @@ func (p2p *P2P) newStream(peerID string) (*stream, error) {
 		return nil, errors.Wrap(err, "failed on create stream")
 	}
 
-	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.enableCompression, p2p.config.enableMetrics), nil
+	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.compressionOption, p2p.config.enableMetrics), nil
 }
 
 // called when network starts listening on an addr
