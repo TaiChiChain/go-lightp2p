@@ -47,7 +47,7 @@ func (p2p *P2P) handleMessage(s *stream) error {
 }
 
 func (p2p *P2P) handleNewStream(s network.Stream) {
-	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.compressionOption, p2p.config.enableMetrics))
+	err := p2p.handleMessage(newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.compressionAlgo, p2p.config.enableMetrics))
 	if err != nil {
 		if err != io.EOF {
 			p2p.logger.WithField("error", err).Error("Handle message failed")
@@ -87,9 +87,9 @@ func (p2p *P2P) send(s *stream, msg []byte) error {
 	return s.AsyncSend(msg)
 }
 
-func compressMsg(msg []byte, compressionOption CompressionAlgo, enableMetrics bool) ([]byte, error) {
+func compressMsg(msg []byte, compressionAlgo CompressionAlgo, enableMetrics bool) ([]byte, error) {
 	var dstData []byte
-	switch compressionOption {
+	switch compressionAlgo {
 	case NoCompression:
 		dstData = make([]byte, 0, len(msg)+1)
 		dstData = append(dstData, byte(NoCompression))

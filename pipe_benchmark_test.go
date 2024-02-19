@@ -22,7 +22,7 @@ type pipeResult struct {
 	receivedTracker map[string]int
 }
 
-func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, compressionOption CompressionAlgo, tps int, totalMsgs int, extraBigData []byte) {
+func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, compressionAlgo CompressionAlgo, tps int, totalMsgs int, extraBigData []byte) {
 	l := logrus.New()
 	l.Level = logrus.ErrorLevel
 	err := log.SetLogLevelRegex("pubsub", "error")
@@ -49,7 +49,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, compressionOpti
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
-		WithCompressionOption(compressionOption),
+		WithCompressionOption(compressionAlgo),
 	}, nil)
 
 	ctx := context.Background()
@@ -269,7 +269,7 @@ func BenchmarkNamePipe_unicast(b *testing.B) {
 	benchmarkPipeUnicast(b, ZstdCompression)
 }
 
-func benchmarkPipeUnicast(b *testing.B, compressionOption CompressionAlgo) {
+func benchmarkPipeUnicast(b *testing.B, compressionAlgo CompressionAlgo) {
 	tps := 2000
 	totalMsgs := 20 * tps
 
@@ -299,7 +299,7 @@ func benchmarkPipeUnicast(b *testing.B, compressionOption CompressionAlgo) {
 			ConnectTimeout:           1 * time.Second,
 		}),
 		WithLogger(l),
-		WithCompressionOption(compressionOption),
+		WithCompressionOption(compressionAlgo),
 	}, nil)
 
 	ctx := context.Background()

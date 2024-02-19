@@ -81,7 +81,7 @@ type PipeImpl struct {
 	cancelRelay       pubsub.RelayCancelFunc
 	msgCh             chan PipeMsg
 	broadcastWorkerCh chan pipeBroadcastWorker
-	compressionOption CompressionAlgo
+	compressionAlgo   CompressionAlgo
 	enableMetrics     bool
 }
 
@@ -96,7 +96,7 @@ func newPipe(ctx context.Context, host host.Host, router routing.Routing, pubsub
 		selfPeerID:        host.ID().String(),
 		msgCh:             make(chan PipeMsg, config.pipe.ReceiveMsgCacheSize),
 		broadcastWorkerCh: make(chan pipeBroadcastWorker, config.pipe.SimpleBroadcast.WorkerCacheSize),
-		compressionOption: config.compressionOption,
+		compressionAlgo:   config.compressionAlgo,
 		enableMetrics:     config.enableMetrics,
 	}, nil
 }
@@ -249,7 +249,7 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 		}
 	}
 
-	data, err = compressMsg(data, p.compressionOption, p.config.enableMetrics)
+	data, err = compressMsg(data, p.compressionAlgo, p.config.enableMetrics)
 	if err != nil {
 		return err
 	}
@@ -324,7 +324,7 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 	}
 
 	if p.pubsub != nil {
-		data, err = compressMsg(data, p.compressionOption, p.config.enableMetrics)
+		data, err = compressMsg(data, p.compressionAlgo, p.config.enableMetrics)
 		if err != nil {
 			return err
 		}

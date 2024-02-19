@@ -603,7 +603,7 @@ func (p2p *P2P) newStream(peerID string) (*stream, error) {
 		return nil, errors.Wrap(err, "failed on create stream")
 	}
 
-	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.compressionOption, p2p.config.enableMetrics), nil
+	return newStream(s, p2p.config.sendTimeout, p2p.config.readTimeout, p2p.config.compressionAlgo, p2p.config.enableMetrics), nil
 }
 
 // called when network starts listening on an addr
