@@ -121,7 +121,7 @@ func (p *PipeImpl) init() error {
 			if err := s.SetReadDeadline(deadline); err != nil {
 				return errors.Wrap(err, "failed to set read deadline")
 			}
-			reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
+			reader := msgio.NewVarintReaderSize(s, maxMessageSize)
 			msg, err := reader.ReadMsg()
 			if err != nil {
 				return err
@@ -228,7 +228,7 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 	if err != nil {
 		return fmt.Errorf("failed on decode peer id: %v", err)
 	}
-	if len(data) > network.MessageSizeMax {
+	if len(data) > maxMessageSize {
 		return msgio.ErrMsgTooLarge
 	}
 
@@ -253,7 +253,7 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 	if err != nil {
 		return err
 	}
-
+	p.config.logger.WithError(err).Warnf("compress msg size:%d", len(data))
 	return retry.Retry(func(attempt uint) error {
 		// try dial
 		if p.host.Network().Connectedness(peerID) != network.Connected {
@@ -319,7 +319,7 @@ func (p *PipeImpl) Broadcast(ctx context.Context, targets []string, data []byte)
 		}
 	}()
 
-	if len(data) > network.MessageSizeMax {
+	if len(data) > maxMessageSize {
 		return msgio.ErrMsgTooLarge
 	}
 

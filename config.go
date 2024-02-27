@@ -27,6 +27,10 @@ const (
 	PipeBroadcastGossip PipeBroadcastType = iota
 )
 
+const (
+	maxMessageSize = 100 * 1024 * 1024
+)
+
 type connMgr struct {
 	enabled bool
 	lo      int

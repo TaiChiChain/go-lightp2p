@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
@@ -125,7 +124,7 @@ func testPipe(t *testing.T, typ PipeBroadcastType, compressionAlgo CompressionAl
 		sender, receiver := pipes[0], pipes[1]
 
 		func() {
-			tooLargeMsg := make([]byte, network.MessageSizeMax+100)
+			tooLargeMsg := make([]byte, maxMessageSize+100)
 			err := sender.Send(ctx, p2pIDs[1], tooLargeMsg)
 			fmt.Println(err)
 			require.Error(t, err)

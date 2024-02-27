@@ -15,7 +15,7 @@ func (p2p *P2P) handleMessage(s *stream) error {
 	if err := s.getStream().SetReadDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("set read deadline failed: %w", err)
 	}
-	reader := msgio.NewVarintReaderSize(s.getStream(), network.MessageSizeMax)
+	reader := msgio.NewVarintReaderSize(s.getStream(), maxMessageSize)
 	msg, err := reader.ReadMsg()
 	if err != nil {
 		if err != io.EOF {
@@ -61,7 +61,7 @@ func waitMsg(stream network.Stream, timeout time.Duration, enableMetrics bool) (
 	if err := stream.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline failed: %w", err)
 	}
-	reader := msgio.NewVarintReaderSize(stream, network.MessageSizeMax)
+	reader := msgio.NewVarintReaderSize(stream, maxMessageSize)
 
 	msg, err := reader.ReadMsg()
 	if err != nil {
@@ -80,7 +80,7 @@ func waitMsg(stream network.Stream, timeout time.Duration, enableMetrics bool) (
 }
 
 func (p2p *P2P) send(s *stream, msg []byte) error {
-	if len(msg) > network.MessageSizeMax {
+	if len(msg) > maxMessageSize {
 		return msgio.ErrMsgTooLarge
 	}
 
