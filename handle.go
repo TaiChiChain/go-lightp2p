@@ -80,10 +80,6 @@ func waitMsg(stream network.Stream, timeout time.Duration, enableMetrics bool) (
 }
 
 func (p2p *P2P) send(s *stream, msg []byte) error {
-	if len(msg) > network.MessageSizeMax {
-		return msgio.ErrMsgTooLarge
-	}
-
 	return s.AsyncSend(msg)
 }
 

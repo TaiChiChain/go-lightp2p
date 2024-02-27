@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"testing"
 	"time"
@@ -125,8 +126,10 @@ func testPipe(t *testing.T, typ PipeBroadcastType, compressionAlgo CompressionAl
 		sender, receiver := pipes[0], pipes[1]
 
 		func() {
-			tooLargeMsg := make([]byte, network.MessageSizeMax+100)
-			err := sender.Send(ctx, p2pIDs[1], tooLargeMsg)
+			tooLargeMsg := make([]byte, network.MessageSizeMax*20) //compress rate should greater than > 5%
+			_, err := rand.Read(tooLargeMsg)
+			require.Nil(t, err)
+			err = sender.Send(ctx, p2pIDs[1], tooLargeMsg)
 			fmt.Println(err)
 			require.Error(t, err)
 		}()

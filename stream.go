@@ -74,6 +74,10 @@ func (s *stream) AsyncSend(msg []byte) error {
 		return err
 	}
 
+	if len(msg) > network.MessageSizeMax {
+		return msgio.ErrMsgTooLarge
+	}
+
 	writer := msgio.NewVarintWriter(s.getStream())
 	if err := writer.WriteMsg(msg); err != nil {
 		return fmt.Errorf("write msg: %w", err)

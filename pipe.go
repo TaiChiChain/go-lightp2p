@@ -228,9 +228,6 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 	if err != nil {
 		return fmt.Errorf("failed on decode peer id: %v", err)
 	}
-	if len(data) > network.MessageSizeMax {
-		return msgio.ErrMsgTooLarge
-	}
 
 	p.host.ConnManager().Protect(peerID, p.pipeID)
 	defer p.host.ConnManager().Unprotect(peerID, p.pipeID)
@@ -252,6 +249,10 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 	data, err = compressMsg(data, p.compressionAlgo, p.config.enableMetrics)
 	if err != nil {
 		return err
+	}
+
+	if len(data) > network.MessageSizeMax {
+		return msgio.ErrMsgTooLarge
 	}
 
 	return retry.Retry(func(attempt uint) error {
