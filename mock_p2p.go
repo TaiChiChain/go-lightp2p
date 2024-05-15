@@ -100,7 +100,7 @@ func (m *mockPipe) Send(ctx context.Context, to string, data []byte) error {
 	}
 	ch, exist := m.pipeConnects[to]
 	if !exist {
-		return ErrPipeNotExist
+		return fmt.Errorf("pipe %s not exist, connnet pipe is %v", to, m.pipeConnects)
 	}
 	ch <- pipeMsg
 	return <-pipeMsg.errCh
@@ -108,6 +108,9 @@ func (m *mockPipe) Send(ctx context.Context, to string, data []byte) error {
 
 func (m *mockPipe) Broadcast(ctx context.Context, targets []string, data []byte) error {
 	for _, to := range targets {
+		if to == m.localID {
+			continue
+		}
 		dataCopy := make([]byte, len(data))
 		copy(dataCopy, data)
 		pipeMsg := &mockPipeMsg{
@@ -311,6 +314,7 @@ func (m *MockP2P) Start() error {
 		for {
 			select {
 			case msg := <-m.receiveCh:
+				fmt.Printf("receive msg from [%s]\n", msg.stream.remotePeer)
 				msg.stream.host = m.host
 				go m.messageHandler(msg.stream, msg.data)
 			}
