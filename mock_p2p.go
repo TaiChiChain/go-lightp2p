@@ -106,8 +106,8 @@ func (m *mockPipe) Send(ctx context.Context, to string, data []byte) error {
 	return <-pipeMsg.errCh
 }
 
-func (m *mockPipe) Broadcast(ctx context.Context, targets []string, data []byte) error {
-	for _, to := range targets {
+func (m *mockPipe) Broadcast(ctx context.Context, _ []string, data []byte) error {
+	for to := range m.pipeConnects {
 		if to == m.localID {
 			continue
 		}
