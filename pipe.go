@@ -2,10 +2,12 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/Rican7/retry"
 	"github.com/Rican7/retry/backoff"
@@ -23,6 +25,14 @@ import (
 	b58 "github.com/mr-tron/base58/base58"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	msgNeedSplitSize = 4 * 1000 * 1024
+
+	sendSmallMsgFlag uint8 = 1
+	sendLargeMsgFlag uint8 = 2
+	ackMsg           uint8 = 111
 )
 
 type PipeManagerImpl struct {
@@ -109,23 +119,16 @@ func (p *PipeImpl) fullProtocolID() protocol.ID {
 	return protocol.ID(fmt.Sprintf("%s/pipe/%s", p.config.protocolID, p.pipeID))
 }
 
-func (p *PipeImpl) init() error {
+func (p *PipeImpl) setStreamHandler() {
 	p.host.SetStreamHandler(p.fullProtocolID(), func(s network.Stream) {
 		remote := s.Conn().RemotePeer().String()
 
 		err := func() error {
-			ctx, cancel := context.WithTimeout(p.ctx, p.config.pipe.UnicastReadTimeout)
-			defer cancel()
-			deadline, _ := ctx.Deadline()
-
-			if err := s.SetReadDeadline(deadline); err != nil {
-				return errors.Wrap(err, "failed to set read deadline")
-			}
-			reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
-			msg, err := reader.ReadMsg()
+			msg, err := p.readLargeMsg(s)
 			if err != nil {
 				return err
 			}
+
 			select {
 			case <-p.ctx.Done():
 				if err := s.Close(); err != nil {
@@ -151,7 +154,9 @@ func (p *PipeImpl) init() error {
 			}).Warn("Read msg failed")
 		}
 	})
+}
 
+func (p *PipeImpl) subscribe() error {
 	if p.pubsub != nil {
 		topic, err := p.pubsub.Join(string(p.fullProtocolID()))
 		if err != nil {
@@ -200,7 +205,14 @@ func (p *PipeImpl) init() error {
 	} else {
 		go p.processBroadcastWorkers()
 	}
+	return nil
+}
 
+func (p *PipeImpl) init() error {
+	p.setStreamHandler()
+	if err := p.subscribe(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -251,32 +263,14 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 		return err
 	}
 
-	if len(data) > network.MessageSizeMax {
-		return msgio.ErrMsgTooLarge
-	}
-
 	return retry.Retry(func(attempt uint) error {
-		// try dial
-		if p.host.Network().Connectedness(peerID) != network.Connected {
-			err = func() error {
-				timedCtx, cancel := context.WithTimeout(ctx, p.config.pipe.ConnectTimeout)
-				defer cancel()
-				// try to find the peer by dht
-				return p.host.Connect(timedCtx, peer.AddrInfo{ID: peerID})
-			}()
-			if err != nil {
-				return err
-			}
-		}
-
-		stream, err := p.host.NewStream(p.ctx, peerID, p.fullProtocolID())
+		s, err := p.getStream(peerID)
 		if err != nil {
 			return err
 		}
 
-		writer := msgio.NewVarintWriter(stream)
-		if err = writer.WriteMsg(data); err != nil {
-			if resetErr := stream.Reset(); resetErr != nil {
+		if err := p.sendLargeMsg(s, data); err != nil {
+			if resetErr := s.Reset(); resetErr != nil {
 				p.config.logger.WithError(resetErr).WithField("to", peerID).Error("Failed to reset stream")
 			}
 
@@ -287,7 +281,7 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 			sendDataSize.Add(float64(len(data)))
 		}
 
-		if err = stream.Close(); err != nil {
+		if err = s.Close(); err != nil {
 			p.config.logger.WithError(err).WithField("to", peerID).Error("Failed to close stream")
 		}
 		return nil
@@ -410,4 +404,131 @@ func newMessageIDGenerater(key []byte) (*messageIDGenerator, error) {
 func (g *messageIDGenerator) generateMessageID(pmsg *pb.Message) string {
 	h := highwayhash.Sum64(pmsg.Data, g.key)
 	return strconv.FormatUint(h, 10)
+}
+
+func (p *PipeImpl) retryDo(do func() error) (pErr error) {
+	return retry.Retry(func(attempt uint) error {
+		return do()
+	}, strategy.Backoff(backoff.BinaryExponential(p.config.pipe.UnicastSendRetryBaseTime)), strategy.Limit(uint(p.config.pipe.UnicastSendRetryNumber)))
+}
+
+type messageSliceInfo struct {
+	Num  int
+	Size int
+}
+
+func (p *PipeImpl) sendStreamMsg(s network.Stream, msg []byte) error {
+	deadline := time.Now().Add(p.config.sendTimeout)
+	if err := s.SetWriteDeadline(deadline); err != nil {
+		return errors.Wrap(err, "failed to set write deadline")
+	}
+	return msgio.NewVarintWriter(s).WriteMsg(msg)
+}
+
+func (p *PipeImpl) readStreamMsg(stream network.Stream) ([]byte, error) {
+	deadline := time.Now().Add(p.config.readTimeout)
+	if err := stream.SetReadDeadline(deadline); err != nil {
+		return nil, errors.Wrap(err, "failed to set read deadline")
+	}
+	return msgio.NewVarintReaderSize(stream, network.MessageSizeMax).ReadMsg()
+}
+
+func (p *PipeImpl) sendLargeMsg(s network.Stream, msg []byte) error {
+	size := len(msg)
+	if size <= msgNeedSplitSize {
+		return p.sendStreamMsg(s, append([]byte{sendSmallMsgFlag}, msg...))
+	}
+
+	num := size / msgNeedSplitSize
+	if size%msgNeedSplitSize != 0 {
+		num++
+	}
+	raw, err := json.Marshal(&messageSliceInfo{
+		Num:  num,
+		Size: size,
+	})
+	if err != nil {
+		return err
+	}
+	if err := p.sendStreamMsg(s, append([]byte{sendLargeMsgFlag}, raw...)); err != nil {
+		return err
+	}
+
+	sendChunk := func(data []byte) error {
+		// send
+		if err := p.sendStreamMsg(s, data); err != nil {
+			return errors.Wrap(err, "failed on send chunk msg")
+		}
+		// wait ack
+		ack, err := p.readStreamMsg(s)
+		if err != nil {
+			return errors.Wrap(err, "failed on read ack")
+		}
+		if len(ack) != 1 || ack[0] != ackMsg {
+			return errors.New("invalid ack for send chunk msg")
+		}
+
+		return nil
+	}
+
+	for i := 0; i < num-1; i++ {
+		if err := sendChunk(msg[i*msgNeedSplitSize : (i+1)*msgNeedSplitSize]); err != nil {
+			return err
+		}
+	}
+	if num != 0 {
+		if err := sendChunk(msg[(num-1)*msgNeedSplitSize:]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *PipeImpl) readLargeMsg(s network.Stream) ([]byte, error) {
+	firstMsg, err := p.readStreamMsg(s)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed on read first msg")
+	}
+	if len(firstMsg) == 0 {
+		return nil, errors.New("empty first msg")
+	}
+
+	switch firstMsg[0] {
+	case sendSmallMsgFlag:
+		return firstMsg[1:], nil
+	case sendLargeMsgFlag:
+		break
+	default:
+		return nil, errors.Errorf("unknown first msg flag %v", firstMsg[0])
+	}
+
+	var info messageSliceInfo
+	if err := json.Unmarshal(firstMsg[1:], &info); err != nil {
+		return nil, err
+	}
+
+	readChunk := func() ([]byte, error) {
+		// read msg
+		raw, err := p.readStreamMsg(s)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed on read chunk msg")
+		}
+		// send ack msg
+		if err = p.sendStreamMsg(s, []byte{ackMsg}); err != nil {
+			return nil, errors.Wrap(err, "failed on send ack msg")
+		}
+		return raw, nil
+	}
+
+	body := make([]byte, 0, info.Size)
+	for i := 0; i < info.Num; i++ {
+		raw, err := readChunk()
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, raw...)
+	}
+
+	return body, nil
 }

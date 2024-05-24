@@ -126,7 +126,7 @@ func benchmarkPipeBroadcast(b *testing.B, typ PipeBroadcastType, compressionAlgo
 			for _, msgReceived := range msgList {
 				if !msgReceived {
 					totalLost++
-					//fmt.Printf("%s lost msg id %d from %s\n", receiver, index, sender)
+					// fmt.Printf("%s lost msg id %d from %s\n", receiver, index, sender)
 				}
 				// require.True(b, msgReceived, fmt.Sprintf("%s lost msg[%d] from %s", receiver, msgIdx, sender))
 			}

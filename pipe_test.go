@@ -126,12 +126,18 @@ func testPipe(t *testing.T, typ PipeBroadcastType, compressionAlgo CompressionAl
 		sender, receiver := pipes[0], pipes[1]
 
 		func() {
-			tooLargeMsg := make([]byte, network.MessageSizeMax*20) //compress rate should greater than > 5%
+			tooLargeMsg := make([]byte, network.MessageSizeMax*20) // compress rate should greater than > 5%
 			_, err := rand.Read(tooLargeMsg)
 			require.Nil(t, err)
 			err = sender.Send(ctx, p2pIDs[1], tooLargeMsg)
-			fmt.Println(err)
-			require.Error(t, err)
+			require.Nil(t, err)
+
+			timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer timeoutCancel()
+			pipeRecveMsg := receiver.Receive(timeoutCtx)
+			require.NotNil(t, pipeRecveMsg)
+			require.Equal(t, p2pIDs[0], pipeRecveMsg.From)
+			require.Equal(t, tooLargeMsg, pipeRecveMsg.Data)
 		}()
 
 		// after is normal

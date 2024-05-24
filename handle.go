@@ -117,7 +117,7 @@ func compressMsg(msg []byte, compressionAlgo CompressionAlgo, enableMetrics bool
 
 func decompressMsg(msg []byte) ([]byte, error) {
 	if len(msg) < 2 {
-		return nil, fmt.Errorf("decompress msg error, msg length < 2")
+		return nil, errors.New("decompress msg error, msg length < 2")
 	}
 
 	var dstData []byte
