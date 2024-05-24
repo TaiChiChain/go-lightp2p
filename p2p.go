@@ -105,7 +105,7 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 	case SecurityDisable:
 		opts = append(opts, libp2p.NoSecurity)
 	case SecurityNoise:
-		opts = append(opts, libp2p.Security(libp2ptls.ID, noise.New))
+		opts = append(opts, libp2p.Security(noise.ID, noise.New))
 	case SecurityTLS:
 		opts = append(opts, libp2p.Security(libp2ptls.ID, libp2ptls.New))
 	}
