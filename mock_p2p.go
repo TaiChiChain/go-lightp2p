@@ -314,7 +314,6 @@ func (m *MockP2P) Start() error {
 		for {
 			select {
 			case msg := <-m.receiveCh:
-				fmt.Printf("receive msg from [%s]\n", msg.stream.remotePeer)
 				msg.stream.host = m.host
 				go m.messageHandler(msg.stream, msg.data)
 			}
