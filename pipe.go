@@ -289,21 +289,7 @@ func (p *PipeImpl) Send(ctx context.Context, to string, data []byte) (err error)
 }
 
 func (p *PipeImpl) getStream(peerID peer.ID) (network.Stream, error) {
-	conns := p.host.Network().ConnsToPeer(peerID)
 	pid := p.fullProtocolID()
-	if len(conns) > 0 {
-		for cidx := range conns {
-			streams := conns[cidx].GetStreams()
-			for sidx := range streams {
-				stream := streams[sidx]
-				if stream.Protocol() == pid && stream.Stat().Direction == network.DirOutbound {
-					// reuse stream
-					return stream, nil
-				}
-			}
-		}
-	}
-
 	return p.host.NewStream(p.ctx, peerID, pid)
 }
 
