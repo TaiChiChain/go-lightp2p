@@ -3,12 +3,19 @@ package network
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/golang/snappy"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-msgio"
 	"github.com/pkg/errors"
+)
+
+const errorTimeout = "i/o deadline reached"
+
+var (
+	WaitMsgTimeout = errors.New("wait response timeout")
 )
 
 func (p2p *P2P) handleMessage(s *stream) error {
@@ -65,6 +72,9 @@ func waitMsg(stream network.Stream, timeout time.Duration, enableMetrics bool) (
 
 	msg, err := reader.ReadMsg()
 	if err != nil {
+		if strings.Contains(err.Error(), errorTimeout) {
+			return nil, WaitMsgTimeout
+		}
 		return nil, err
 	}
 	msg, err = decompressMsg(msg)

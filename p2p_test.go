@@ -317,6 +317,17 @@ func TestP2P_AsyncSend(t *testing.T) {
 	}
 }
 
+func TestP2P_SendTimeout(t *testing.T) {
+	p2ps := generateNetworks(t, 2, true, nil, nil)
+	p1 := p2ps[0]
+	p2 := p2ps[1]
+
+	msg := []byte("hello")
+
+	_, err := p1.Send(p2.PeerID(), msg)
+	assert.Contains(t, err.Error(), WaitMsgTimeout.Error())
+}
+
 func TestP2P_AsyncSendWithNetworkBusy(t *testing.T) {
 	p2ps := generateNetworks(t, 2, true, nil, nil)
 	p1 := p2ps[0]
