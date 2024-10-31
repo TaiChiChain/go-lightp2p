@@ -701,3 +701,26 @@ func TestP2P_IsConnected(t *testing.T) {
 	isConnected := p2.IsConnected(p1.PeerID())
 	assert.Equal(t, true, isConnected)
 }
+
+func TestP2PInUse(t *testing.T) {
+	p2ps := generateNetworks(t, 1, true, nil, nil)
+	p1 := p2ps[0]
+
+	repeatAddr, err := getAddr(p1.P2P)
+	assert.Nil(t, err)
+
+	defaultOpts := []Option{
+		WithLocalAddr(repeatAddr.Addrs[0].String()),
+		WithProtocolID(protocolID),
+		WithConnMgr(true, 10, 100, 20*time.Second),
+	}
+
+	p2p, err := New(
+		context.Background(),
+		defaultOpts...,
+	)
+	assert.Nil(t, err)
+	err = p2p.Start()
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "port is already in use")
+}
