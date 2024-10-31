@@ -30,6 +30,7 @@ import (
 	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	ma "github.com/multiformats/go-multiaddr"
+	ma_net "github.com/multiformats/go-multiaddr/net"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/sha3"
@@ -98,7 +99,7 @@ func New(ctx context.Context, options ...Option) (*P2P, error) {
 		libp2p.NoListenAddrs,
 		libp2p.ConnectionGater(conf.gater),
 		libp2p.ResourceManager(rm),
-		libp2p.Transport(tcp.NewTCPTransport, tcp.DisableReuseport()),
+		libp2p.Transport(tcp.NewTCPTransport),
 	}
 
 	switch conf.securityType {
@@ -226,6 +227,11 @@ func (p2p *P2P) Start() error {
 	if err != nil {
 		return errors.Wrapf(err, "listen address[%s] format error", p2p.config.localAddr)
 	}
+
+	if p2p.isPortInUse(a) {
+		return fmt.Errorf("listen address[%s] err: port is already in use", p2p.config.localAddr)
+	}
+
 	err = p2p.host.Network().Listen(a)
 	if err != nil {
 		return errors.Wrapf(err, "listen on %s failed", p2p.config.localAddr)
@@ -244,6 +250,21 @@ func (p2p *P2P) Start() error {
 
 	p2p.logger.Info("Start p2p success")
 	return nil
+}
+
+// isPortInUse checks if a port is already in use by attempting to establish a connection.
+func (p2p *P2P) isPortInUse(addrs ...ma.Multiaddr) bool {
+	for _, addr := range addrs {
+		conn, err := ma_net.Listen(addr)
+		if err != nil {
+			p2p.logger.Errorf(err.Error())
+			return true
+		} else {
+			err = conn.Close()
+			_ = err
+		}
+	}
+	return false
 }
 
 // BootstrapConnect refer to ipfs bootstrap
